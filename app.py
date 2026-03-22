@@ -1,16 +1,64 @@
-import os
-import time
 import io
-import wave
 import json
+import logging
+import os
 import re
+import sys
+import time
+import traceback
+import wave
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+import sounddevice as sd
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
-import sounddevice as sd
-
 
 load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Logging Configuration
+# ---------------------------------------------------------------------------
+LOG_DIR = Path(__file__).parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+
+LOG_LEVEL = os.environ.get("RTT_LOG_LEVEL", "DEBUG").upper()
+LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
+LOG_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per file
+LOG_BACKUP_COUNT = 5
+
+def setup_logger(name: str, log_file: str | None = None) -> logging.Logger:
+    """Configure and return a logger with console and optional file handlers."""
+    logger = logging.getLogger(name)
+    logger.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
+    logger.handlers.clear()
+
+    formatter = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATE_FORMAT)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(getattr(logging, LOG_LEVEL, logging.DEBUG))
+    logger.addHandler(console_handler)
+
+    if log_file:
+        file_path = LOG_DIR / log_file
+        file_handler = RotatingFileHandler(
+            file_path,
+            maxBytes=LOG_MAX_BYTES,
+            backupCount=LOG_BACKUP_COUNT,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(formatter)
+        file_handler.setLevel(logging.DEBUG)
+        logger.addHandler(file_handler)
+
+    return logger
+
+
+logger = setup_logger("rtt.app", "app.log")
 
 PROMPT = (
     "Transcribe only what is clearly audible in THIS audio chunk in Arabic and provide "
@@ -36,11 +84,11 @@ def clean_text(text: str) -> str:
 
 def clean_model_field(text: str) -> str:
     cleaned = clean_text(text)
-    # Guard against malformed streamed JSON fragments leaking into text fields.
     markers = ['{"transcription"', '{"translation"', '{ "transcription"', '{ "translation"']
     for marker in markers:
         idx = cleaned.find(marker)
         if idx > 0:
+            logger.debug("Truncating malformed JSON fragment at position %d", idx)
             cleaned = cleaned[:idx].strip()
             break
     return cleaned
@@ -49,17 +97,21 @@ def clean_model_field(text: str) -> str:
 def extract_json_object(text: str):
     text = text.strip()
     if not text:
+        logger.debug("extract_json_object: empty input")
         return None
 
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
+        result = json.loads(text)
+        logger.debug("extract_json_object: direct JSON parse succeeded")
+        return result
+    except json.JSONDecodeError as e:
+        logger.debug("extract_json_object: direct parse failed (%s), trying recovery", e)
 
     decoder = json.JSONDecoder()
     best = None
     best_score = -1
     idx = 0
+    candidates_found = 0
     while idx < len(text):
         start = text.find("{", idx)
         if start == -1:
@@ -67,6 +119,7 @@ def extract_json_object(text: str):
         try:
             candidate, end = decoder.raw_decode(text[start:])
             if isinstance(candidate, dict):
+                candidates_found += 1
                 score = 0
                 if candidate.get("stable_transcription"):
                     score += 3
@@ -80,12 +133,24 @@ def extract_json_object(text: str):
                     score += 1
                 if candidate.get("unstable_translation_tail") is not None:
                     score += 1
+                logger.debug(
+                    "extract_json_object: candidate %d at pos %d, score=%d",
+                    candidates_found, start, score
+                )
                 if score >= best_score:
                     best = candidate
                     best_score = score
             idx = start + max(end, 1)
         except json.JSONDecodeError:
             idx = start + 1
+
+    if best is not None:
+        logger.debug(
+            "extract_json_object: selected candidate with score=%d from %d candidates",
+            best_score, candidates_found
+        )
+    else:
+        logger.warning("extract_json_object: no valid JSON object found in response")
 
     return best
 
@@ -99,14 +164,24 @@ def safe_float(value, default: float = 0.0) -> float:
 
 def record_microphone_chunk(duration_seconds: int = 5, sample_rate: int = 16000):
     frames = int(duration_seconds * sample_rate)
-    with sd.RawInputStream(
-        samplerate=sample_rate,
-        channels=1,
-        dtype="int16",
-    ) as stream:
-        audio_bytes, overflowed = stream.read(frames)
-        if overflowed:
-            print("Warning: audio input overflowed during recording.")
+    logger.debug(
+        "Recording microphone chunk: duration=%ds, sample_rate=%d, frames=%d",
+        duration_seconds, sample_rate, frames
+    )
+
+    try:
+        with sd.RawInputStream(
+            samplerate=sample_rate,
+            channels=1,
+            dtype="int16",
+        ) as stream:
+            audio_bytes, overflowed = stream.read(frames)
+            if overflowed:
+                logger.warning("Audio input overflowed during recording")
+    except Exception as e:
+        logger.error("Failed to record from microphone: %s", e)
+        logger.debug("Microphone error traceback:\n%s", traceback.format_exc())
+        raise
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -115,20 +190,29 @@ def record_microphone_chunk(duration_seconds: int = 5, sample_rate: int = 16000)
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(audio_bytes)
 
-    return buffer.getvalue()
+    wav_bytes = buffer.getvalue()
+    logger.debug("Recorded %d bytes of WAV audio", len(wav_bytes))
+    return wav_bytes
 
 
 def build_client_and_config():
+    logger.info("Building Gemini client and configuration")
     api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
+        logger.error("Missing API key in environment variables")
         raise RuntimeError(
             "Missing API key. Add GEMINI_API_KEY or GOOGLE_API_KEY to your .env file."
         )
 
+    logger.debug("API key found (length=%d), creating client", len(api_key))
     client = genai.Client(
         api_key=api_key,
     )
 
+    logger.debug(
+        "Configuring model: %s, max_tokens=%d, temp=%.2f, top_p=%.2f, top_k=%d",
+        MODEL_NAME, MAX_OUTPUT_TOKENS, TEMPERATURE, TOP_P, TOP_K
+    )
     generate_content_config = types.GenerateContentConfig(
         system_instruction=[
             types.Part.from_text(text="""You are a realtime translator for Arabic speech.
@@ -193,6 +277,7 @@ Rules:
         ),
     )
 
+    logger.info("Gemini client and config built successfully")
     return client, generate_content_config
 
 
@@ -204,23 +289,28 @@ def transcribe_chunk(
     sample_rate: int = 16000,
     log_fn=None,
 ):
-    def emit(message: str):
-        print(message, flush=True)
+    def emit(message: str, level: str = "info"):
+        log_method = getattr(logger, level, logger.info)
+        log_method("[chunk %d] %s", chunk_index, message)
         if log_fn:
             log_fn(message)
 
     chunk_start = time.perf_counter()
-    emit(f"\n[chunk {chunk_index}] Recording...")
+    logger.info("=== Chunk %d: Starting transcription ===", chunk_index)
+    emit("Recording...")
 
     record_start = time.perf_counter()
-    audio_bytes = record_microphone_chunk(
-        duration_seconds=duration_seconds,
-        sample_rate=sample_rate,
-    )
+    try:
+        audio_bytes = record_microphone_chunk(
+            duration_seconds=duration_seconds,
+            sample_rate=sample_rate,
+        )
+    except Exception as e:
+        logger.error("[chunk %d] Recording failed: %s", chunk_index, e)
+        raise
+
     record_seconds = time.perf_counter() - record_start
-    emit(
-        f"[chunk {chunk_index}] Recorded {len(audio_bytes)} bytes in {record_seconds:.2f}s"
-    )
+    emit(f"Recorded {len(audio_bytes)} bytes in {record_seconds:.2f}s")
 
     return process_audio_chunk(
         client,
@@ -247,10 +337,20 @@ def process_audio_chunk(
     queue_wait_seconds: float = 0.0,
     log_fn=None,
 ):
-    def emit(message: str):
-        print(message, flush=True)
+    def emit(message: str, level: str = "info"):
+        log_method = getattr(logger, level, logger.info)
+        log_method("[chunk %d] %s", chunk_index, message)
         if log_fn:
-            log_fn(message)
+            log_fn(f"[chunk {chunk_index}] {message}")
+
+    logger.debug(
+        "[chunk %d] process_audio_chunk called: audio_bytes=%d, prev_chunk=%d, overlap=%.2fs, queue_wait=%.3fs",
+        chunk_index, len(audio_bytes), prev_chunk_index, overlap_seconds, queue_wait_seconds
+    )
+    if prior_tail_transcription:
+        logger.debug("[chunk %d] prior_tail_transcription: %s", chunk_index, prior_tail_transcription[:100])
+    if prior_tail_translation:
+        logger.debug("[chunk %d] prior_tail_translation: %s", chunk_index, prior_tail_translation[:100])
 
     context_text = (
         "Realtime boundary context:\n"
@@ -275,31 +375,38 @@ def process_audio_chunk(
         ),
     ]
 
-    emit(f"[chunk {chunk_index}] Sending audio to model...")
+    emit("Sending audio to model...")
     request_start = time.perf_counter()
 
     response_text = ""
     stream_event_count = 0
     first_text_at = None
-    for response_chunk in client.models.generate_content_stream(
-        model=MODEL_NAME,
-        contents=contents,
-        config=generate_content_config,
-    ):
-        stream_event_count += 1
-        if response_chunk.text:
-            if first_text_at is None:
-                first_text_at = time.perf_counter()
-                emit(
-                    f"[chunk {chunk_index}] First response text after {first_text_at - request_start:.2f}s"
-                )
-            response_text += response_chunk.text
+
+    try:
+        for response_chunk in client.models.generate_content_stream(
+            model=MODEL_NAME,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            stream_event_count += 1
+            if response_chunk.text:
+                if first_text_at is None:
+                    first_text_at = time.perf_counter()
+                    ttfb = first_text_at - request_start
+                    emit(f"First response text after {ttfb:.2f}s (TTFB)")
+                    logger.debug("[chunk %d] Time to first byte: %.3fs", chunk_index, ttfb)
+                response_text += response_chunk.text
+    except Exception as e:
+        logger.error("[chunk %d] Model API error: %s", chunk_index, e)
+        logger.debug("[chunk %d] API error traceback:\n%s", chunk_index, traceback.format_exc())
+        raise
 
     receive_done = time.perf_counter()
     receive_seconds = receive_done - request_start
-    emit(
-        f"[chunk {chunk_index}] Response received in {receive_seconds:.2f}s "
-        f"({stream_event_count} stream events, {len(response_text)} chars)"
+    emit(f"Response received in {receive_seconds:.2f}s ({stream_event_count} stream events, {len(response_text)} chars)")
+    logger.debug(
+        "[chunk %d] Stream complete: events=%d, chars=%d, receive_time=%.3fs",
+        chunk_index, stream_event_count, len(response_text), receive_seconds
     )
 
     process_start = time.perf_counter()
@@ -316,8 +423,10 @@ def process_audio_chunk(
         "dedupe_anchor": "",
         "raw": response_text,
     }
+
     parsed = extract_json_object(response_text)
     if parsed is not None:
+        logger.debug("[chunk %d] JSON parsed successfully, extracting fields", chunk_index)
         payload["stable_transcription"] = clean_model_field(parsed.get("stable_transcription", ""))
         payload["unstable_transcription_tail"] = clean_model_field(
             parsed.get("unstable_transcription_tail", "")
@@ -338,8 +447,10 @@ def process_audio_chunk(
         legacy_transcription = clean_model_field(parsed.get("transcription", ""))
         legacy_translation = clean_model_field(parsed.get("translation", ""))
         if not payload["stable_transcription"] and not payload["unstable_transcription_tail"]:
+            logger.debug("[chunk %d] Using legacy transcription field", chunk_index)
             payload["stable_transcription"] = legacy_transcription
         if not payload["stable_translation"] and not payload["unstable_translation_tail"]:
+            logger.debug("[chunk %d] Using legacy translation field", chunk_index)
             payload["stable_translation"] = legacy_translation
 
         payload["transcription"] = " ".join(
@@ -358,8 +469,15 @@ def process_audio_chunk(
         if not payload["dedupe_anchor"]:
             words = payload["stable_transcription"].split()
             payload["dedupe_anchor"] = " ".join(words[-3:]) if words else ""
+
+        logger.info(
+            "[chunk %d] Transcription: %s | Translation: %s",
+            chunk_index,
+            payload["transcription"][:80] + "..." if len(payload["transcription"]) > 80 else payload["transcription"],
+            payload["translation"][:80] + "..." if len(payload["translation"]) > 80 else payload["translation"],
+        )
     else:
-        # Keep raw for debugging only; do not pollute live transcript with malformed JSON.
+        logger.warning("[chunk %d] Failed to parse JSON response, raw length=%d", chunk_index, len(response_text))
         payload["raw"] = clean_text(response_text)
         payload["stable_transcription"] = ""
         payload["stable_translation"] = ""
@@ -371,9 +489,11 @@ def process_audio_chunk(
         chunk_seconds = time.perf_counter() - chunk_start
     else:
         chunk_seconds = record_seconds + queue_wait_seconds + receive_seconds + process_seconds
-    emit(
-        f"[chunk {chunk_index}] Processing took {process_seconds:.2f}s | "
-        f"Total chunk time {chunk_seconds:.2f}s"
+
+    emit(f"Processing took {process_seconds:.2f}s | Total chunk time {chunk_seconds:.2f}s")
+    logger.debug(
+        "[chunk %d] Timing breakdown: record=%.3fs, queue_wait=%.3fs, receive=%.3fs, process=%.3fs, total=%.3fs",
+        chunk_index, record_seconds, queue_wait_seconds, receive_seconds, process_seconds, chunk_seconds
     )
 
     payload["chunk_index"] = chunk_index
@@ -389,41 +509,78 @@ def process_audio_chunk(
     payload["prev_chunk_index"] = prev_chunk_index
     payload["overlap_seconds"] = round(overlap_seconds, 3)
 
+    logger.debug("[chunk %d] === Chunk processing complete ===", chunk_index)
     return payload
 
 
 def generate():
+    logger.info("Starting continuous transcription loop")
     client, generate_content_config = build_client_and_config()
 
     chunk_index = 1
-    while True:
-        payload = transcribe_chunk(
-            client,
-            generate_content_config,
-            chunk_index=chunk_index,
-            duration_seconds=5,
-            sample_rate=16000,
-        )
-        if payload.get("transcription") or payload.get("translation"):
-            print(
-                json.dumps(
-                    {
-                        "transcription": payload.get("transcription", ""),
-                        "translation": payload.get("translation", ""),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-        else:
-            print(payload.get("raw", ""))
+    session_start = time.time()
 
-        print()
-        chunk_index += 1
+    try:
+        while True:
+            try:
+                payload = transcribe_chunk(
+                    client,
+                    generate_content_config,
+                    chunk_index=chunk_index,
+                    duration_seconds=5,
+                    sample_rate=16000,
+                )
+                if payload.get("transcription") or payload.get("translation"):
+                    output = json.dumps(
+                        {
+                            "transcription": payload.get("transcription", ""),
+                            "translation": payload.get("translation", ""),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    print(output)
+                else:
+                    raw = payload.get("raw", "")
+                    if raw:
+                        logger.debug("[chunk %d] No transcription, raw: %s", chunk_index, raw[:200])
+                    print(raw)
+
+                print()
+                chunk_index += 1
+
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                logger.error("[chunk %d] Error during transcription: %s", chunk_index, e)
+                logger.debug("Chunk error traceback:\n%s", traceback.format_exc())
+                chunk_index += 1
+                time.sleep(1)
+
+    except KeyboardInterrupt:
+        logger.info("Received interrupt signal, stopping...")
+    finally:
+        session_duration = time.time() - session_start
+        logger.info(
+            "Session ended: %d chunks processed in %.1f seconds (avg %.2fs/chunk)",
+            chunk_index - 1, session_duration,
+            session_duration / max(1, chunk_index - 1)
+        )
+
 
 if __name__ == "__main__":
-    print('started ..')
+    logger.info("=" * 60)
+    logger.info("RTT-Alhuda CLI starting at %s", datetime.now().isoformat())
+    logger.info("Log level: %s, Log directory: %s", LOG_LEVEL, LOG_DIR)
+    logger.info("=" * 60)
+
     start = time.time()
-    generate()
-    end = time.time()
-    print(f"\nTime taken: {end - start} seconds")
+    try:
+        generate()
+    except Exception as e:
+        logger.critical("Fatal error: %s", e)
+        logger.debug("Fatal error traceback:\n%s", traceback.format_exc())
+        sys.exit(1)
+    finally:
+        end = time.time()
+        logger.info("Total runtime: %.1f seconds", end - start)
