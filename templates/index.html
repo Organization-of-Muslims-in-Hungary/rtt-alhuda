@@ -381,6 +381,7 @@
       const startBtn = document.getElementById("start-btn");
       const stopBtn = document.getElementById("stop-btn");
       const statusText = document.getElementById("status-text");
+      const MAX_DEBUG_ENTRIES = 50;
 
       let ws = null;
       let requestedRecording = false;
@@ -415,6 +416,28 @@
       function prependChild(container, child) {
         if (!container) return;
         container.insertBefore(child, container.firstChild);
+      }
+
+      function disposeDebugEntry(entry) {
+        if (!entry) return;
+
+        entry.querySelectorAll("audio").forEach((audio) => {
+          audio.src = "";
+          audio.removeAttribute("src");
+          if (typeof audio.load === "function") {
+            audio.load();
+          }
+        });
+
+        entry.remove();
+      }
+
+      function trimDebugEntries(container) {
+        if (!container) return;
+
+        while (container.childElementCount > MAX_DEBUG_ENTRIES) {
+          disposeDebugEntry(container.lastElementChild);
+        }
       }
 
       function addNetworkRequest(msg) {
@@ -489,6 +512,7 @@
         }
 
         prependChild(networkList, wrapper);
+        trimDebugEntries(networkList);
       }
 
       function appendServerLog(msg) {
@@ -502,6 +526,14 @@
         statusText.textContent = isRecording ? "Recording" : "Connected";
         startBtn.disabled = isRecording;
         stopBtn.disabled = !isRecording;
+      }
+
+      function resetSessionState() {
+        requestedRecording = false;
+        transcriptionCommitted.textContent = "";
+        translationCommitted.textContent = "";
+        networkList.replaceChildren();
+        serverLog.replaceChildren();
       }
 
       function ensureSocket() {
@@ -603,6 +635,7 @@
 
       startBtn.addEventListener("click", async () => {
         try {
+          resetSessionState();
           requestedRecording = true;
           const socket = await ensureSocket();
           socket.send(JSON.stringify({ type: "start" }));
