@@ -140,7 +140,9 @@ async def capture_microphone_loop(client: ClientState) -> None:
                         client.buffer_start_sample += overflow_samples
     except Exception as exc:
         await send_log(client, f"Microphone error: {exc}", "error")
+        client.recording = False
     finally:
+        client.recording = False
         await send_log(client, "Microphone capture stopped")
 
 
