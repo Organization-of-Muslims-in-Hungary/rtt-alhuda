@@ -6,6 +6,9 @@ Live transcription and translation over a browser UI.
 
 ```bash
 python -m venv venv
+# macOS/Linux:
+source venv/bin/activate
+# Windows:
 venv\Scripts\activate
 pip install -r requirements.txt
 ```
