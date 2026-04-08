@@ -18,13 +18,14 @@ import base64
 import json
 import os
 import time
+import traceback
 import wave
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 from dotenv import load_dotenv
 
 
@@ -186,8 +187,8 @@ async def send_chunk_to_openrouter(
                     {
                         "type": "text",
                         "text": (
-                            f"\"original_transcription\": \"{original_transcription}\", "
-                            f"\"original_translation\": \"{original_translation}\""
+                            f'"original_transcription": "{original_transcription}", '
+                            f'"original_translation": "{original_translation}"'
                         ),
                     },
                     {
@@ -263,7 +264,6 @@ async def _process_chunk(
     chunk_end_sample: Optional[int],
 ):
     chunk_duration_seconds = processed_sample_count / SAMPLE_RATE
-    import time
     try:
         start_time = time.time()
         result = await send_chunk_to_openrouter(
@@ -273,7 +273,7 @@ async def _process_chunk(
             original_translation,
         )
         latency_ms = int((time.time() - start_time) * 1000)
-        
+
         new_transcription = str(result.get("new_additional_transcription", ""))
         new_translation = str(result.get("new_additional_translation", ""))
 
@@ -296,8 +296,15 @@ async def _process_chunk(
         if not client.ws.closed:
             await client.ws.send_str(json.dumps(message))
 
+    except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
+        await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
     except Exception as exc:
-        await send_log(client, f"Error processing chunk: {exc}", "error")
+        await send_log(
+            client,
+            f"Unexpected error processing chunk ({type(exc).__name__}): {exc}\n{traceback.format_exc()}",
+            "error",
+        )
+
 
 async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
     """Periodically convert buffered audio into transcript and translation updates."""
@@ -437,13 +444,13 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 async def index_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the browser UI from templates/index_v2.html."""
+    """Serve the browser UI from templates/index.html."""
 
-    index_path = Path(__file__).parent / "templates" / "index_v2.html"
+    index_path = Path(__file__).parent / "templates" / "index.html"
 
     if not index_path.is_file():
-        log(f"Error: index_v2.html not found at {index_path}", "error")
-        return web.Response(status=404, text="index_v2.html not found")
+        log(f"Error: index.html not found at {index_path}", "error")
+        return web.Response(status=404, text="index.html not found")
     return web.FileResponse(index_path)
 
 

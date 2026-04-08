@@ -1,522 +1,627 @@
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Live Transcription</title>
-  <style>
-    :root {
-      --bg: #ffffff;
-      --text: #111111;
-      --muted: #6b7280;
-      --line: #e5e7eb;
-      --accent: #0ea5e9;
-      --ok: #16a34a;
-      --error: #dc2626;
-    }
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Live Transcription</title>
+    <style>
+      :root {
+        --bg: #111111;
+        --text: #f1f1f1;
+        --muted: #9ca3af;
+        --line: #374151;
+        --accent: #0ea5e9;
+        --ok: #16a34a;
+        --error: #dc2626;
 
-    * { box-sizing: border-box; }
+        /* Additional color variables */
+        --hover-border: #cbd5e1;
+        --btn-start-border: #bbf7d0;
+        --btn-start-bg: #f0fdf4;
+        --btn-start-text: #166534;
+        --btn-stop-border: #fecaca;
+        --btn-stop-bg: #fef2f2;
+        --btn-stop-text: #991b1b;
+        --audio-state: #0f766e;
+      }
 
-    body {
-      margin: 0;
-      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
+      * {
+        box-sizing: border-box;
+      }
 
-    .wrap {
-      max-width: 980px;
-      margin: 0 auto;
-      padding: 20px;
-    }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+      }
 
-    h1 {
-      margin: 0 0 8px;
-      font-size: 28px;
-    }
+      .wrap {
+        max-width: 980px;
+        margin: 0 auto;
+        padding: 20px;
+      }
 
-    .sub {
-      margin: 0 0 18px;
-      color: var(--muted);
-      font-size: 14px;
-    }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
 
-    .status {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 8px 12px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      font-size: 13px;
-      margin-bottom: 16px;
-      background: #fafafa;
-    }
+      .sub {
+        margin: 0 0 18px;
+        color: var(--muted);
+        font-size: 14px;
+      }
 
-    .controls {
-      display: flex;
-      gap: 10px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
-    }
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        font-size: 13px;
+        margin-bottom: 16px;
+        background: var(--bg);
+      }
 
-    button {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--text);
-      border-radius: 10px;
-      padding: 10px 14px;
-      font-size: 14px;
-      cursor: pointer;
-    }
+      .controls {
+        display: flex;
+        gap: 10px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
 
-    button:hover {
-      border-color: #cbd5e1;
-    }
+      button {
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 14px;
+        cursor: pointer;
+      }
 
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+      button:hover {
+        border-color: var(--hover-border);
+      }
 
-    .btn-start {
-      border-color: #bbf7d0;
-      background: #f0fdf4;
-      color: #166534;
-    }
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
 
-    .btn-stop {
-      border-color: #fecaca;
-      background: #fef2f2;
-      color: #991b1b;
-    }
+      .btn-start {
+        border-color: var(--btn-start-border);
+        background: var(--btn-start-bg);
+        color: var(--btn-start-text);
+      }
 
-    .panes {
-      display: grid;
-      grid-template-columns: 1.5fr 1fr;
-      gap: 14px;
-      align-items: start;
-    }
+      .btn-stop {
+        border-color: var(--btn-stop-border);
+        background: var(--btn-stop-bg);
+        color: var(--btn-stop-text);
+      }
 
-    .panel-title {
-      margin: 0 0 8px;
-      font-size: 14px;
-      color: var(--muted);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
+      .panes {
+        display: grid;
+        grid-template-columns: 1.5fr 1fr;
+        gap: 14px;
+        align-items: start;
+      }
 
-    .log-lines {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      padding: 10px;
-      max-height: 70vh;
-      overflow: auto;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 12px;
-      line-height: 1.35;
-    }
+      .panel-title {
+        margin: 0 0 8px;
+        font-size: 14px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
 
-    .audio-list {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      padding: 10px;
-      max-height: 38vh;
-      overflow: auto;
-      margin-top: 12px;
-    }
+      .log-lines {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        padding: 10px;
+        max-height: 70vh;
+        overflow: auto;
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.35;
+      }
 
-    .raw-list {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      background: #fff;
-      padding: 10px;
-      max-height: 38vh;
-      overflow: auto;
-      margin-top: 12px;
-      font-family: Consolas, "Courier New", monospace;
-      font-size: 12px;
-      line-height: 1.35;
-    }
+      .audio-list {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        padding: 10px;
+        max-height: 38vh;
+        overflow: auto;
+        margin-top: 12px;
+      }
 
-    .raw-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      margin-bottom: 8px;
-      background: #fff;
-    }
+      .raw-list {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        padding: 10px;
+        max-height: 38vh;
+        overflow: auto;
+        margin-top: 12px;
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.35;
+      }
 
-    .raw-title {
-      color: var(--muted);
-      margin-bottom: 6px;
-      font-weight: 600;
-    }
+      .request-list {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--bg);
+        padding: 10px;
+        max-height: 38vh;
+        overflow: auto;
+        margin-top: 12px;
+      }
 
-    .raw-text {
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+      .request-item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        margin-bottom: 8px;
+        background: var(--bg);
+      }
 
-    .audio-item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 8px;
-      margin-bottom: 8px;
-      background: #fff;
-    }
+      .request-head {
+        color: var(--muted);
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
 
-    .audio-head {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
-      font-size: 12px;
-      color: var(--muted);
-    }
+      .request-kv {
+        margin-bottom: 8px;
+      }
 
-    .audio-state {
-      font-weight: 600;
-      color: #0f766e;
-    }
+      .request-key {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 2px;
+      }
 
-    .audio-meta {
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 4px;
-      white-space: pre-wrap;
-    }
+      .request-value {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: Consolas, "Courier New", monospace;
+        font-size: 12px;
+        line-height: 1.35;
+      }
 
-    .log-line {
-      margin-bottom: 6px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
+      .raw-item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        margin-bottom: 8px;
+        background: var(--bg);
+      }
 
-    .dot {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: pulse 1.2s infinite ease-in-out;
-    }
+      .raw-title {
+        color: var(--muted);
+        margin-bottom: 6px;
+        font-weight: 600;
+      }
 
-    @keyframes pulse {
-      0% { transform: scale(0.9); opacity: 0.6; }
-      50% { transform: scale(1.2); opacity: 1; }
-      100% { transform: scale(0.9); opacity: 0.6; }
-    }
+      .raw-text {
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
 
-    .stream-panel {
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 14px;
-      background: #fff;
-      margin-bottom: 12px;
-    }
+      .audio-item {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px;
+        margin-bottom: 8px;
+        background: var(--bg);
+      }
 
-    .label {
-      font-size: 12px;
-      color: var(--muted);
-      margin: 0 0 8px;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
+      .audio-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 6px;
+        font-size: 12px;
+        color: var(--muted);
+      }
 
-    .text {
-      white-space: pre-wrap;
-      line-height: 1.45;
-      font-size: 16px;
-      min-height: 56px;
-    }
+      .audio-state {
+        font-weight: 600;
+        color: var(--audio-state);
+      }
 
-    .provisional {
-      opacity: 0.72;
-      font-style: italic;
-    }
+      .audio-meta {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 4px;
+        white-space: pre-wrap;
+      }
 
-    .error {
-      color: var(--error);
-      font-weight: 600;
-    }
+      .log-line {
+        margin-bottom: 6px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
 
-    @media (max-width: 640px) {
-      .wrap { padding: 14px; }
-      h1 { font-size: 22px; }
-      .text { font-size: 15px; }
-      .panes { grid-template-columns: 1fr; }
-    }
-  </style>
-</head>
-<body>
-  <main class="wrap">
-    <h1>Live Transcription + Translation</h1>
-    <p class="sub">Captures microphone audio in chunks and appends results as they arrive.</p>
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: pulse 1.2s infinite ease-in-out;
+      }
 
-    <div class="status" id="status">
-      <span class="dot" aria-hidden="true"></span>
-      <span id="status-text">Connecting...</span>
-    </div>
+      @keyframes pulse {
+        0% {
+          transform: scale(0.9);
+          opacity: 0.6;
+        }
+        50% {
+          transform: scale(1.2);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(0.9);
+          opacity: 0.6;
+        }
+      }
 
-    <div class="controls">
-      <button class="btn-start" id="start-btn">Start Recording</button>
-      <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
-    </div>
+      .stream-panel {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+        background: var(--bg);
+        margin-bottom: 12px;
+      }
 
-    <div class="panes">
-      <section>
-        <h2 class="panel-title">Live Text</h2>
-        <section class="stream-panel">
-          <div class="label">Transcription</div>
-          <div class="text" id="transcription-stream">
-            <span id="transcription-committed"></span><span id="transcription-provisional" class="provisional"></span>
-          </div>
+      .label {
+        font-size: 12px;
+        color: var(--muted);
+        margin: 0 0 8px;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+      }
+
+      .text {
+        white-space: pre-wrap;
+        line-height: 1.45;
+        font-size: 16px;
+        min-height: 56px;
+      }
+
+      .arabic {
+        font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+        direction: rtl;
+      }
+
+      .provisional {
+        opacity: 0.72;
+        font-style: italic;
+      }
+
+      .error {
+        color: var(--error);
+        font-weight: 600;
+      }
+
+      @media (max-width: 640px) {
+        .wrap {
+          padding: 14px;
+        }
+        h1 {
+          font-size: 22px;
+        }
+        .text {
+          font-size: 15px;
+        }
+        .panes {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <h1>Live Transcription</h1>
+      <p class="sub">
+        Frontend controls start/stop while backend captures and chunks
+        microphone audio.
+      </p>
+
+      <div class="status" id="status">
+        <span class="dot" aria-hidden="true"></span>
+        <span id="status-text">Connecting...</span>
+      </div>
+
+      <div class="controls">
+        <button class="btn-start" id="start-btn">Start Recording</button>
+        <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
+      </div>
+
+      <div class="panes">
+        <section>
+          <h2 class="panel-title">Live Text</h2>
+          <section class="stream-panel">
+            <div class="label">Transcription</div>
+            <div class="text arabic" id="transcription-stream">
+              <span id="transcription-committed"></span
+              ><span id="transcription-provisional" class="provisional"></span>
+            </div>
+          </section>
+          <section class="stream-panel">
+            <div class="label">Translation</div>
+            <div class="text" id="translation-stream">
+              <span id="translation-committed"></span
+              ><span id="translation-provisional" class="provisional"></span>
+            </div>
+          </section>
         </section>
-        <section class="stream-panel">
-          <div class="label">Translation</div>
-          <div class="text" id="translation-stream">
-            <span id="translation-committed"></span><span id="translation-provisional" class="provisional"></span>
-          </div>
+        <section>
+          <h2 class="panel-title" style="margin-top: 12px">Network Requests</h2>
+          <section
+            class="request-list"
+            style="max-height: 80vh"
+            id="network-list"
+          ></section>
+          <h2 class="panel-title" style="margin-top: 12px">Backend Logs</h2>
+          <section class="log-lines" id="server-log"></section>
         </section>
-      </section>
-      <section>
-          <h2 class="panel-title" style="margin-top: 12px;">Audio Queue / Chunks</h2>
-          <section class="audio-list" id="audio-list"></section>
-        <h2 class="panel-title" style="margin-top: 12px;">Raw Model Responses</h2>
-        <section class="raw-list" id="raw-list"></section>
-        <h2 class="panel-title">Backend Logs</h2>
-        <section class="log-lines" id="server-log"></section>
-      </section>
-    </div>
-  </main>
-
+      </div>
+    </main>
+  </body>
   <script>
-    const transcriptionCommitted = document.getElementById('transcription-committed');
-    const transcriptionProvisional = document.getElementById('transcription-provisional');
-    const translationCommitted = document.getElementById('translation-committed');
-    const translationProvisional = document.getElementById('translation-provisional');
-    const serverLog = document.getElementById('server-log');
-    const audioList = document.getElementById('audio-list');
-    const rawList = document.getElementById('raw-list');
-    const statusText = document.getElementById('status-text');
-    const startBtn = document.getElementById('start-btn');
-    const stopBtn = document.getElementById('stop-btn');
+    (() => {
+      const startBtn = document.getElementById("start-btn");
+      const stopBtn = document.getElementById("stop-btn");
+      const statusText = document.getElementById("status-text");
 
-    function escapeHtml(text) {
-      return (text || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;');
-    }
+      let ws = null;
+      let requestedRecording = false;
 
-    function addServerLog(message) {
-      const time = new Date().toLocaleTimeString();
-      const div = document.createElement('div');
-      div.className = 'log-line';
-      div.innerHTML = `[${time}] ${escapeHtml(message)}`;
-      serverLog.prepend(div);
-    }
-
-    function renderMergedText(payload) {
-      const committedTrans = (payload.committed_transcription || '').trim();
-      const provisionalTrans = (payload.provisional_transcription || '').trim();
-      const committedTranslationText = (payload.committed_translation || '').trim();
-      const provisionalTranslationText = (payload.provisional_translation || '').trim();
-
-      transcriptionCommitted.textContent = committedTrans;
-      transcriptionProvisional.textContent = provisionalTrans ? ` ${provisionalTrans}` : '';
-      translationCommitted.textContent = committedTranslationText;
-      translationProvisional.textContent = provisionalTranslationText ? ` ${provisionalTranslationText}` : '';
-    }
-
-    function formatSeconds(value) {
-      if (typeof value !== 'number') {
-        return '-';
-      }
-      return `${value.toFixed(2)}s`;
-    }
-
-    function upsertAudioItem(payload) {
-      const chunkId = Number(payload.chunk_index || 0);
-      if (!chunkId) {
-        return;
+      function log(msg) {
+        console.log(`[${new Date().toISOString()}] ${msg}`);
       }
 
-      let item = audioList.querySelector(`[data-chunk-id="${chunkId}"]`);
-      if (!item) {
-        item = document.createElement('article');
-        item.className = 'audio-item';
-        item.dataset.chunkId = String(chunkId);
-        item.innerHTML = `
-          <div class="audio-head">
-            <div>Chunk <span class="chunk-id"></span></div>
-            <div class="audio-state"></div>
-          </div>
-          <audio controls preload="none" style="width: 100%;"></audio>
-          <div class="audio-meta"></div>
-        `;
-        audioList.prepend(item);
-      }
-
-      const chunkIdEl = item.querySelector('.chunk-id');
-      const stateEl = item.querySelector('.audio-state');
-      const audioEl = item.querySelector('audio');
-      const metaEl = item.querySelector('.audio-meta');
-
-      chunkIdEl.textContent = String(chunkId);
-      stateEl.textContent = payload.state || 'unknown';
-
-      if (payload.audio_url) {
-        audioEl.src = `${payload.audio_url}?v=${chunkId}`;
-      }
-
-      const metaParts = [
-        `bytes: ${payload.audio_bytes ?? '-'}`,
-        `record: ${formatSeconds(Number(payload.record_seconds))}`,
-        `window: ${payload.start_ts ?? '-'}-${payload.end_ts ?? '-'}s`,
-        `overlap: ${formatSeconds(Number(payload.overlap_seconds))}`,
-        `queue wait: ${formatSeconds(Number(payload.queue_wait_seconds))}`,
-        `receive: ${formatSeconds(Number(payload.receive_seconds))}`,
-        `process: ${formatSeconds(Number(payload.process_seconds))}`,
-        `total: ${formatSeconds(Number(payload.total_seconds))}`,
-        `queue size: ${payload.queue_size ?? '-'}`,
-      ];
-      metaEl.textContent = metaParts.join(' | ');
-    }
-
-    function addRawChunk(payload) {
-      const chunkId = Number(payload.chunk_index || 0);
-      if (!chunkId) {
-        return;
-      }
-
-      const item = document.createElement('article');
-      item.className = 'raw-item';
-      const shownRaw = (payload.raw || '').trim() || '(empty raw response)';
-      item.innerHTML = `
-        <div class="raw-title">Chunk ${chunkId} Raw (${(shownRaw || '').length} chars)</div>
-        <div class="raw-text">${escapeHtml(shownRaw)}</div>
-      `;
-      rawList.prepend(item);
-    }
-
-    function setRecordingState(isRecording, queueSize = 0, overlapRatio = 0, strideSeconds = 0) {
-      startBtn.disabled = isRecording;
-      stopBtn.disabled = !isRecording;
-      statusText.textContent = isRecording
-        ? `Recording in progress... (queue: ${queueSize}, overlap: ${Math.round(overlapRatio * 100)}%, stride: ${Number(strideSeconds).toFixed(1)}s)`
-        : 'Connected. Click Start to begin.';
-    }
-
-    async function postControl(path) {
-      const response = await fetch(path, { method: 'POST' });
-      if (!response.ok) {
-        throw new Error(`Request failed: ${response.status}`);
-      }
-      return response.json();
-    }
-
-    startBtn.addEventListener('click', async () => {
-      try {
-        await postControl('/start');
-      } catch (err) {
-        addServerLog(`Start failed: ${err.message}`);
-      }
-    });
-
-    stopBtn.addEventListener('click', async () => {
-      try {
-        await postControl('/stop');
-      } catch (err) {
-        addServerLog(`Stop failed: ${err.message}`);
-      }
-    });
-
-    const source = new EventSource('/stream');
-
-    source.onopen = () => {
-      statusText.textContent = 'Connected. Click Start to begin.';
-      addServerLog('SSE connection opened.');
-    };
-
-    source.onerror = () => {
-      statusText.textContent = 'Connection error. Reload to reconnect.';
-      addServerLog('SSE connection error.');
-    };
-
-    source.addEventListener('status', (event) => {
-      const payload = JSON.parse(event.data);
-      setRecordingState(
-        Boolean(payload.recording),
-        Number(payload.queue_size || 0),
-        Number(payload.overlap_ratio || 0),
-        Number(payload.stride_seconds || 0)
+      // UI helpers for showing model/debug info
+      const networkList = document.getElementById("network-list");
+      const serverLog = document.getElementById("server-log");
+      const transcriptionCommitted = document.getElementById(
+        "transcription-committed",
       );
-    });
+      const translationCommitted = document.getElementById(
+        "translation-committed",
+      );
 
-    source.addEventListener('log', (event) => {
-      const payload = JSON.parse(event.data);
-      addServerLog(payload.message || '');
-    });
+      function appendCommittedText(target, chunk, joiner = " ") {
+        if (!target) return;
+        const value = String(chunk ?? "").trim();
+        if (!value) return;
 
-    source.addEventListener('error', (event) => {
-      const payload = JSON.parse(event.data);
-      addServerLog(`Worker error: ${payload.message || 'Unknown error'}`);
-      setRecordingState(false, 0, 0, 0);
-    });
+        if (target.textContent && target.textContent.trim().length > 0) {
+          target.textContent += joiner + value;
+          return;
+        }
 
-    source.addEventListener('audio_chunk', (event) => {
-      const payload = JSON.parse(event.data);
-      upsertAudioItem(payload);
-    });
+        target.textContent = value;
+      }
 
-    source.addEventListener('chunk', (event) => {
-      const payload = JSON.parse(event.data);
+      function prependChild(container, child) {
+        if (!container) return;
+        container.insertBefore(child, container.firstChild);
+      }
 
-      addServerLog(`Chunk ${payload.chunk_index} received from backend.`);
+      function addNetworkRequest(msg) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "request-item";
 
-      renderMergedText(payload);
-      addRawChunk(payload);
+        const head = document.createElement("div");
+        head.className = "request-head";
+        const latencyStr =
+          msg.latencyMs !== undefined ? ` (${msg.latencyMs}ms)` : "";
+        head.textContent = `Request — ${new Date().toLocaleTimeString()}${latencyStr}`;
+        wrapper.appendChild(head);
 
-      upsertAudioItem({
-        chunk_index: payload.chunk_index,
-        state: 'processed',
-        audio_url: payload.audio_url,
-        record_seconds: Number(payload.record_seconds || 0),
-        queue_wait_seconds: Number(payload.queue_wait_seconds || 0),
-        receive_seconds: Number(payload.receive_seconds || 0),
-        process_seconds: Number(payload.process_seconds || 0),
-        total_seconds: Number(payload.total_seconds || 0),
-        audio_bytes: payload.audio_bytes,
-        start_ts: payload.start_ts,
-        end_ts: payload.end_ts,
-        overlap_seconds: payload.overlap_seconds,
+        if (msg.originalAudioChunk) {
+          const audioDiv = document.createElement("div");
+          audioDiv.style.marginBottom = "8px";
+
+          const audio = document.createElement("audio");
+          audio.controls = true;
+          audio.src = "data:audio/wav;base64," + msg.originalAudioChunk;
+          audio.preload = "metadata";
+          audio.style.width = "100%";
+          audio.style.height = "32px";
+          audioDiv.appendChild(audio);
+
+          const meta = document.createElement("div");
+          meta.className = "audio-meta";
+          meta.style.marginBottom = "8px";
+          meta.textContent = `${msg.processedChunks || 1} chunk, duration ${Number(msg.chunkDurationSeconds || 0).toFixed(3)}s (window ${msg.windowSeconds}s)`;
+          audioDiv.appendChild(meta);
+          wrapper.appendChild(audioDiv);
+        }
+
+        const ctxTitle = document.createElement("div");
+        ctxTitle.className = "request-key";
+        ctxTitle.textContent = "Context:";
+        wrapper.appendChild(ctxTitle);
+
+        const ctxText = document.createElement("div");
+        ctxText.className = "request-value";
+        ctxText.textContent = `Transcription: ${msg.originalTranscription || "(empty)"}\nTranslation: ${msg.originalTranslation || "(empty)"}`;
+        ctxText.style.background = "var(--bg)";
+        ctxText.style.border = "1px solid var(--line)";
+        ctxText.style.padding = "4px";
+        ctxText.style.borderRadius = "4px";
+        ctxText.style.marginBottom = "8px";
+        wrapper.appendChild(ctxText);
+
+        const resTitle = document.createElement("div");
+        resTitle.className = "request-key";
+        resTitle.textContent = "Response Payload:";
+        wrapper.appendChild(resTitle);
+
+        if (msg.rawResponse) {
+          const resPre = document.createElement("pre");
+          resPre.className = "request-value";
+          resPre.style.background = "var(--bg)";
+          resPre.style.border = "1px solid var(--line)";
+          resPre.style.padding = "4px";
+          resPre.style.borderRadius = "4px";
+          resPre.style.margin = "0";
+          try {
+            resPre.textContent = JSON.stringify(
+              JSON.parse(msg.rawResponse),
+              null,
+              2,
+            );
+          } catch (e) {
+            resPre.textContent = msg.rawResponse;
+          }
+          wrapper.appendChild(resPre);
+        }
+
+        prependChild(networkList, wrapper);
+      }
+
+      function appendServerLog(msg) {
+        const el = document.createElement("div");
+        el.className = "log-line";
+        el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+        prependChild(serverLog, el);
+      }
+
+      function updateUiForRecording(isRecording) {
+        statusText.textContent = isRecording ? "Recording" : "Connected";
+        startBtn.disabled = isRecording;
+        stopBtn.disabled = !isRecording;
+      }
+
+      function ensureSocket() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          return Promise.resolve(ws);
+        }
+
+        if (ws && ws.readyState === WebSocket.CONNECTING) {
+          return new Promise((resolve, reject) => {
+            const onOpen = () => {
+              cleanup();
+              resolve(ws);
+            };
+            const onError = () => {
+              cleanup();
+              reject(new Error("WebSocket connection failed"));
+            };
+            const cleanup = () => {
+              ws.removeEventListener("open", onOpen);
+              ws.removeEventListener("error", onError);
+            };
+            ws.addEventListener("open", onOpen);
+            ws.addEventListener("error", onError);
+          });
+        }
+
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const wsUrl = `${wsProtocol}//${window.location.host}/stream`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          log("WebSocket connected");
+          statusText.textContent = "Connected";
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg?.type === "transcription") {
+              const trans = msg.transcription ?? "";
+              const trad = msg.translation ?? "";
+              appendCommittedText(transcriptionCommitted, trans);
+              appendCommittedText(translationCommitted, trad, " ");
+
+              addNetworkRequest(msg);
+              return;
+            }
+
+            if (msg?.type === "audio_chunk") {
+              return;
+            }
+
+            if (msg?.type === "log") {
+              const level = msg.level ? `[${msg.level}] ` : "";
+              appendServerLog(level + (msg.message || ""));
+              return;
+            }
+
+            appendServerLog(JSON.stringify(msg));
+          } catch (e) {
+            appendServerLog(event.data);
+          }
+        };
+
+        ws.onerror = () => {
+          statusText.textContent = "Error";
+          appendServerLog("WebSocket error");
+        };
+
+        ws.onclose = () => {
+          log("WebSocket closed");
+          ws = null;
+          if (requestedRecording) {
+            statusText.textContent = "Disconnected";
+          } else {
+            statusText.textContent = "Stopped";
+          }
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+        };
+
+        return new Promise((resolve, reject) => {
+          ws.addEventListener(
+            "open",
+            () => {
+              resolve(ws);
+            },
+            { once: true },
+          );
+          ws.addEventListener(
+            "error",
+            () => {
+              reject(new Error("WebSocket connection failed"));
+            },
+            { once: true },
+          );
+        });
+      }
+
+      startBtn.addEventListener("click", async () => {
+        try {
+          requestedRecording = true;
+          const socket = await ensureSocket();
+          socket.send(JSON.stringify({ type: "start" }));
+          updateUiForRecording(true);
+        } catch (err) {
+          log("start error: " + (err?.message || err));
+          statusText.textContent = "Error";
+        }
       });
 
-      if (payload.revised_prev_applied) {
-        addServerLog(`Chunk ${payload.chunk_index}: revised previous provisional tail.`);
-      }
-      if (payload.merge_fallback_used) {
-        addServerLog(`Chunk ${payload.chunk_index}: used legacy merge fallback fields.`);
-      }
-
-      addServerLog(
-        `Chunk ${payload.chunk_index}: ${payload.start_ts}s-${payload.end_ts}s, overlap ${payload.overlap_seconds || 0}s, record ${payload.record_seconds}s, queue ${payload.queue_wait_seconds || 0}s, receive ${payload.receive_seconds}s, process ${payload.process_seconds}s, total ${payload.total_seconds}s`
-      );
-    });
-
-    fetch('/status')
-      .then((response) => response.json())
-      .then((payload) => setRecordingState(
-        Boolean(payload.recording),
-        Number(payload.queue_size || 0),
-        Number(payload.overlap_ratio || 0),
-        Number(payload.stride_seconds || 0)
-      ))
-      .catch(() => setRecordingState(false, 0, 0, 0));
+      stopBtn.addEventListener("click", () => {
+        requestedRecording = false;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "stop" }));
+        }
+        statusText.textContent = ws ? "Connected" : "Stopped";
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+      });
+    })();
   </script>
-</body>
 </html>
