@@ -28,6 +28,9 @@ from typing import Optional
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 from dotenv import load_dotenv
 
+import webrtcvad
+
+vad = webrtcvad.Vad(2)  # aggressiveness 0-3 (2 is aggressive)
 
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
 
@@ -42,6 +45,30 @@ CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 FRAME_CHUNK_SECONDS = 0.1
 MAX_BUFFER_SECONDS = AUDIO_WINDOW_SECONDS + CHUNK_OVERLAP_SECONDS + 6
+
+
+def is_speech_present(pcm_data: bytes) -> bool:
+    """Check if a PCM audio chunk contains speech using WebRTC VAD."""
+    try:
+        # WebRTC VAD requires exact frame durations: 10, 20, or 30 ms.
+        frame_duration_ms = 30
+        frame_bytes = int((SAMPLE_RATE * frame_duration_ms / 1000.0) * CHANNELS * SAMPLE_WIDTH_BYTES)
+        
+        speech_frames = 0
+        total_frames = 0
+        
+        for i in range(0, len(pcm_data) - frame_bytes + 1, frame_bytes):
+            frame = pcm_data[i:i+frame_bytes]
+            if vad.is_speech(frame, SAMPLE_RATE):
+                speech_frames += 1
+            total_frames += 1
+            
+        # If less than ~5% of frames contain speech, we consider it silent noise.
+        speech_ratio = speech_frames / total_frames if total_frames > 0 else 0
+        return speech_ratio >= 0.05
+    except Exception as e:
+        print(f"VAD error: {e}")
+        return True  # Fallback to true so we don't drop audio falsely
 
 
 @dataclass
@@ -164,20 +191,23 @@ async def send_chunk_to_openrouter(
     You will be given an audio stream chunk and an existing transcription and translation. Transcribe and translate the new words
     in the audio with Arabic transcription (أ ب ت ...), and English translation.
      
-    YOUR JOB: append only new words from the given audio, that proberly continues the original transcription and translation in each request.
+    YOUR JOB: append only the NEW words that have been said in the given audio.
 
-    SUPER IMPORTANT: Do NOT include words of your own! Do NOT repeat text!!. 
-    ONLY respond with the new additional transcription and translation that is IN THE AUDIO and not included in the original transcription and translation. 
+    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat text!!. 
+    ONLY respond with the new additional transcription and translation that is IN THE AUDIO and NOT included in the original transcription and translation. 
     If the the audio contains speech that is already written in the original transcription, DO NOT repeat it again in your response.
-    
-    Ignore the last second (two or three words) of the audio, to avoid incomplete sentences.
 
-    If audio is silent, respond with empty strings.
-    Do NOT autocomplete or include words of your own! Only what is actually spoken in the audio!
+    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
+
+    Do NOT autocomplete! or hullucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
+    
+    Ignore the last second (two or three words) of the audio, to avoid incomplete sentences (they will be included in the next chunk with more context).
     And don't add new lines.
     """
     body = {
         "model": OPENROUTER_MODEL,
+        "temperature": 0.0,       # Force deterministic output
+        "top_p": 0.1,             # Restrict token choices heavily
         "messages": [
             {
                 "role": "system",
@@ -349,6 +379,16 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 continue
 
             wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
+
+            # --- WebRTC VAD check ---
+            if not is_speech_present(chunk_pcm):
+                await send_log(client, "Silent audio chunk detected by VAD, skipping LLM request.")
+                async with client.lock:
+                    if chunk_end_sample is not None:
+                        client.last_chunk_end_sample = chunk_end_sample
+                continue
+            # ------------------------
+
             wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
             original_transcription = " ".join(client.transcription_buffer[-2:])
