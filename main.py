@@ -199,7 +199,7 @@ async def send_chunk_to_openrouter(
 
     SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
 
-    Do NOT autocomplete! or hullucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
+    Do NOT autocomplete! or hallucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
     
     Ignore the last second (two or three words) of the audio, to avoid incomplete sentences (they will be included in the next chunk with more context).
     And don't add new lines.
@@ -378,8 +378,6 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
             if not chunk_pcm:
                 continue
 
-            wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
-
             # --- WebRTC VAD check ---
             if not is_speech_present(chunk_pcm):
                 await send_log(client, "Silent audio chunk detected by VAD, skipping LLM request.")
@@ -389,6 +387,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 continue
             # ------------------------
 
+            wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
             wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
             original_transcription = " ".join(client.transcription_buffer[-2:])
