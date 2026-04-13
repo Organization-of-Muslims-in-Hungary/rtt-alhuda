@@ -1,3 +1,4 @@
 aiohttp==3.13.5
 sounddevice==0.5.5
 python-dotenv==1.1.1
+webrtcvad==2.0.10
