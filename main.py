@@ -17,6 +17,8 @@ import asyncio
 import base64
 import json
 import os
+import platform
+import sys
 import time
 import traceback
 import wave
@@ -24,6 +26,11 @@ from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
+
+# Work around a Windows + Python 3.14 issue where platform.system()
+# can block inside a WMI query and make aiohttp import appear stuck.
+if os.name == "nt" and sys.version_info >= (3, 14):
+    platform.system = lambda: "Windows"
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 from dotenv import load_dotenv
@@ -37,14 +44,13 @@ load_dotenv(dotenv_path=Path(__file__).with_name(".env"), override=False)
 
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-3.1-flash-lite-preview")
-PROCESSING_INTERVAL_SECONDS = 2
-AUDIO_WINDOW_SECONDS = 6
-CHUNK_OVERLAP_SECONDS = 1.0
+PROCESSING_INTERVAL_SECONDS = 3
+CONTEXT_CHUNK_COUNT = 2  # Number of past chunks to include in the payload for context
 SAMPLE_RATE = 16000
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 FRAME_CHUNK_SECONDS = 0.1
-MAX_BUFFER_SECONDS = AUDIO_WINDOW_SECONDS + CHUNK_OVERLAP_SECONDS + 6
+MAX_BUFFER_SECONDS = 120  # Increased to prevent dropping audio during API delays
 
 
 def is_speech_present(pcm_data: bytes) -> bool:
@@ -72,6 +78,15 @@ def is_speech_present(pcm_data: bytes) -> bool:
 
 
 @dataclass
+class ChunkInfo:
+    """Stores exact sample boundaries and results for a transcribed audio chunk."""
+    start_sample: int
+    end_sample: int
+    transcription: str
+    translation: str
+
+
+@dataclass
 class ClientState:
     """Per-WebSocket runtime state for one connected browser session."""
 
@@ -79,13 +94,12 @@ class ClientState:
     pcm_buffer: bytearray = field(default_factory=bytearray)
     buffer_start_sample: int = 0
     total_samples_written: int = 0
-    transcription_buffer: list[str] = field(default_factory=list)
-    translation_buffer: list[str] = field(default_factory=list)
+    chunk_history: list[ChunkInfo] = field(default_factory=list)
     recorder_task: Optional[asyncio.Task] = None
     processor_task: Optional[asyncio.Task] = None
     recording: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    last_chunk_end_sample: Optional[int] = None
+    last_chunk_end_sample: int = 0
 
 
 def get_hours_timestamp() -> str:
@@ -193,7 +207,7 @@ async def send_chunk_to_openrouter(
      
     YOUR JOB: append only the NEW words that have been said in the given audio.
 
-    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat text!!. 
+    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat what is already in the original transcription/translation!. 
     ONLY respond with the new additional transcription and translation that is IN THE AUDIO and NOT included in the original transcription and translation. 
     If the the audio contains speech that is already written in the original transcription, DO NOT repeat it again in your response.
 
@@ -201,7 +215,7 @@ async def send_chunk_to_openrouter(
 
     Do NOT autocomplete! or hallucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
     
-    Ignore the last second (two or three words) of the audio, to avoid incomplete sentences (they will be included in the next chunk with more context).
+    DO NOT include the last second (incomplete words/sentences) of the audio (they will be sent again in the next chunk with more context).
     And don't add new lines.
     """
     body = {
@@ -290,12 +304,12 @@ async def _process_chunk(
     client: ClientState,
     http: ClientSession,
     wav_b64: str,
-    processed_sample_count: int,
+    new_audio_start_sample: int,
+    new_audio_end_sample: int,
     original_transcription: str,
     original_translation: str,
-    chunk_end_sample: Optional[int],
+    chunk_duration_seconds: float,
 ):
-    chunk_duration_seconds = processed_sample_count / SAMPLE_RATE
     try:
         start_time = time.time()
         result = await send_chunk_to_openrouter(
@@ -309,8 +323,15 @@ async def _process_chunk(
         new_transcription = str(result.get("new_additional_transcription", ""))
         new_translation = str(result.get("new_additional_translation", ""))
 
-        client.transcription_buffer.append(new_transcription)
-        client.translation_buffer.append(new_translation)
+        async with client.lock:
+            client.chunk_history.append(
+                ChunkInfo(
+                    start_sample=new_audio_start_sample,
+                    end_sample=new_audio_end_sample,
+                    transcription=new_transcription,
+                    translation=new_translation,
+                )
+            )
 
         message = {
             "type": "transcription",
@@ -321,7 +342,7 @@ async def _process_chunk(
             "rawResponse": json.dumps(result),
             "originalAudioChunk": wav_b64,
             "processedChunks": 1,
-            "windowSeconds": AUDIO_WINDOW_SECONDS,
+            "windowSeconds": chunk_duration_seconds,
             "chunkDurationSeconds": chunk_duration_seconds,
             "latencyMs": latency_ms,
         }
@@ -343,69 +364,99 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
 
     await send_log(
         client,
-        f"Audio processing started (every {PROCESSING_INTERVAL_SECONDS}s, window {AUDIO_WINDOW_SECONDS}s)",
+        f"Audio processing started (every {PROCESSING_INTERVAL_SECONDS}s, dynamic window)",
     )
 
     try:
-        while client.recording and not client.ws.closed:
-            await asyncio.sleep(PROCESSING_INTERVAL_SECONDS)
+        next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
 
-            window_samples = int(SAMPLE_RATE * AUDIO_WINDOW_SECONDS)
-            overlap_samples = int(SAMPLE_RATE * CHUNK_OVERLAP_SECONDS)
+        while client.recording and not client.ws.closed:
+            wait_seconds = next_cycle_at - time.monotonic()
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+
             bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
 
             async with client.lock:
                 end_sample = client.total_samples_written
-                available_samples = end_sample - client.buffer_start_sample
-                if available_samples <= 0:
-                    chunk_pcm = b""
-                    processed_sample_count = 0
-                    chunk_end_sample = None
+                chunk_pcm = b""
+                new_audio_pcm = b""
+                total_samples = 0
+                
+                if CONTEXT_CHUNK_COUNT > 0:
+                    history_to_include = client.chunk_history[-CONTEXT_CHUNK_COUNT:]
                 else:
-                    start_sample = max(
-                        client.buffer_start_sample,
-                        end_sample - window_samples,
-                    )
+                    history_to_include = []
+                
+                if history_to_include:
+                    past_start_sample = history_to_include[0].start_sample
+                    original_transcription = " ".join(c.transcription for c in history_to_include if c.transcription).strip()
+                    original_translation = " ".join(c.translation for c in history_to_include if c.translation).strip()
+                else:
+                    past_start_sample = client.last_chunk_end_sample
+                    original_transcription = ""
+                    original_translation = ""
 
+                new_audio_start_sample = client.last_chunk_end_sample
+                new_audio_end_sample = end_sample
+
+                new_samples_count = new_audio_end_sample - new_audio_start_sample
+                
+                # Check if we have enough new audio, otherwise wait
+                if new_samples_count < int(SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS):
+                    pass
+                else:
+                    start_sample = max(client.buffer_start_sample, past_start_sample)
                     start_offset_samples = start_sample - client.buffer_start_sample
                     end_offset_samples = end_sample - client.buffer_start_sample
+                    
                     start_byte = start_offset_samples * bytes_per_frame
                     end_byte = end_offset_samples * bytes_per_frame
                     chunk_pcm = bytes(client.pcm_buffer[start_byte:end_byte])
-                    processed_sample_count = max(0, end_sample - start_sample)
-                    chunk_end_sample = end_sample
+                    
+                    # For VAD, we only want to check the NEW audio, not the historical overlap
+                    safe_new_audio_start = max(client.buffer_start_sample, new_audio_start_sample)
+                    new_start_offset = safe_new_audio_start - client.buffer_start_sample
+                    new_start_byte = new_start_offset * bytes_per_frame
+                    new_audio_pcm = bytes(client.pcm_buffer[new_start_byte:end_byte])
+                    
+                    total_samples = end_sample - start_sample
 
             if not chunk_pcm:
+                next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
                 continue
 
-            # --- WebRTC VAD check ---
-            if not is_speech_present(chunk_pcm):
+            # --- WebRTC VAD check on exclusively new audio
+            if not is_speech_present(new_audio_pcm):
                 await send_log(client, "Silent audio chunk detected by VAD, skipping LLM request.")
                 async with client.lock:
-                    if chunk_end_sample is not None:
-                        client.last_chunk_end_sample = chunk_end_sample
+                    client.last_chunk_end_sample = new_audio_end_sample
+                next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
                 continue
             # ------------------------
 
             wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
             wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
 
-            original_transcription = " ".join(client.transcription_buffer[-2:])
-            original_translation = " ".join(client.translation_buffer[-2:])
+            request_started_at = time.monotonic()
 
             await _process_chunk(
                 client,
                 http,
                 wav_b64,
-                processed_sample_count,
+                new_audio_start_sample,
+                new_audio_end_sample,
                 original_transcription,
                 original_translation,
-                chunk_end_sample,
+                chunk_duration_seconds=total_samples / SAMPLE_RATE,
             )
 
             async with client.lock:
-                if chunk_end_sample is not None:
-                    client.last_chunk_end_sample = chunk_end_sample
+                client.last_chunk_end_sample = new_audio_end_sample
+
+            # Keep a request-start-based cadence: every PROCESSING_INTERVAL_SECONDS
+            # from request start, or immediately after slower responses.
+            next_cycle_at = request_started_at + PROCESSING_INTERVAL_SECONDS
 
     finally:
         await send_log(client, "Audio processing stopped")
@@ -437,9 +488,8 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
     client.pcm_buffer.clear()
     client.buffer_start_sample = 0
     client.total_samples_written = 0
-    client.transcription_buffer.clear()
-    client.translation_buffer.clear()
-    client.last_chunk_end_sample = None
+    client.chunk_history.clear()
+    client.last_chunk_end_sample = 0
 
     client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
     client.processor_task = asyncio.create_task(process_audio_loop(client, http))
