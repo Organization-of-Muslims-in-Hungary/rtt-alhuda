@@ -34,7 +34,11 @@ if os.name == "nt" and sys.version_info >= (3, 14):
 
 import edge_tts
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
+import aiohttp_cors
 from dotenv import load_dotenv
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.contrib.media import MediaPlayer
+import fractions
 
 import webrtcvad
 
@@ -159,6 +163,23 @@ class ChunkInfo:
     transcription: str
     translation: str
     translation_hu: str = ""
+
+
+# Global set of SSE queues — one per connected React frontend client
+_sse_listeners: set[asyncio.Queue] = set()
+_active_pcs: set = set()  # Track open RTCPeerConnections
+
+
+async def _broadcast_translations(ar: str, en: str, hu: str) -> None:
+    """Push latest translations to all SSE listeners."""
+    payload = json.dumps({"ar": ar, "en": en, "hu": hu})
+    dead = set()
+    for q in _sse_listeners:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            dead.add(q)
+    _sse_listeners.difference_update(dead)
 
 
 @dataclass
@@ -422,6 +443,14 @@ async def _process_chunk(
                 )
             )
 
+        # Broadcast to React SSE clients whenever we have new text
+        if new_transcription or new_translation or new_translation_hu:
+            async with client.lock:
+                full_ar = " ".join(c.transcription for c in client.chunk_history if c.transcription)
+                full_en = " ".join(c.translation for c in client.chunk_history if c.translation)
+                full_hu = " ".join(c.translation_hu for c in client.chunk_history if c.translation_hu)
+            await _broadcast_translations(full_ar, full_en, full_hu)
+
         message = {
             "type": "transcription",
             "transcription": new_transcription,
@@ -437,7 +466,7 @@ async def _process_chunk(
             "chunkDurationSeconds": chunk_duration_seconds,
             "latencyMs": latency_ms,
         }
-        # Add TTS audio as base64
+        # Add TTS audio as base64 (for legacy WebSocket UI)
         if tts_en_bytes:
             message["ttsEnAudio"] = base64.b64encode(tts_en_bytes).decode("ascii")
         if tts_hu_bytes:
@@ -445,6 +474,20 @@ async def _process_chunk(
 
         if not client.ws.closed:
             await client.ws.send_str(json.dumps(message))
+
+        # Push TTS audio to any connected WebRTC audio streams (React frontend)
+        if tts_en_bytes:
+            for q in list(client.ws._req.app.get("webrtc_tts_en", set())):
+                try:
+                    q.put_nowait(tts_en_bytes)
+                except asyncio.QueueFull:
+                    pass
+        if tts_hu_bytes:
+            for q in list(client.ws._req.app.get("webrtc_tts_hu", set())):
+                try:
+                    q.put_nowait(tts_hu_bytes)
+                except asyncio.QueueFull:
+                    pass
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
         await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
@@ -728,27 +771,183 @@ async def index_handler(_: web.Request) -> web.StreamResponse:
     return web.FileResponse(index_path)
 
 
+async def react_index_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the React frontend index.html for all React routes."""
+    react_path = Path(__file__).parent / "frontend" / "index.html"
+    if not react_path.is_file():
+        return web.Response(status=404, text="React frontend not built yet. Run: npm run build")
+    return web.FileResponse(react_path)
+
+
+async def sse_text_handler(request: web.Request) -> web.StreamResponse:
+    """Server-Sent Events endpoint — streams {ar, en, hu} to React clients."""
+    response = web.StreamResponse()
+    response.headers["Content-Type"] = "text/event-stream"
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    await response.prepare(request)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=50)
+    _sse_listeners.add(queue)
+    log(f"SSE client connected (total: {len(_sse_listeners)})")
+    try:
+        while True:
+            payload = await asyncio.wait_for(queue.get(), timeout=25)
+            await response.write(f"data: {payload}\n\n".encode())
+    except asyncio.TimeoutError:
+        # Send a keepalive comment to prevent browser timeout
+        try:
+            await response.write(b": keepalive\n\n")
+        except Exception:
+            pass
+        # Re-enter the loop — handled by finally if client disconnected
+        try:
+            while True:
+                payload = await asyncio.wait_for(queue.get(), timeout=25)
+                await response.write(f"data: {payload}\n\n".encode())
+        except (asyncio.TimeoutError, ConnectionResetError, Exception):
+            pass
+    except (ConnectionResetError, Exception):
+        pass
+    finally:
+        _sse_listeners.discard(queue)
+        log(f"SSE client disconnected (total: {len(_sse_listeners)})")
+    return response
+
+
+class AudioStreamTrack(MediaStreamTrack):
+    """A MediaStreamTrack that streams edge-tts TTS audio to a WebRTC peer."""
+
+    kind = "audio"
+
+    def __init__(self, tts_queue: asyncio.Queue):
+        super().__init__()
+        self._queue = tts_queue
+        self._timestamp = 0
+        self._sample_rate = 48000
+        self._samples_per_frame = 960  # 20ms at 48kHz
+
+    async def recv(self):
+        import av as _av
+        import numpy as _np
+
+        # Wait for the next audio chunk (MP3 bytes) from TTS
+        mp3_bytes: bytes = await self._queue.get()
+
+        # Decode MP3 to PCM using PyAV
+        container = _av.open(__import__("io").BytesIO(mp3_bytes))
+        pcm_frames = []
+        for frame in container.decode(audio=0):
+            pcm_frames.append(frame.to_ndarray())
+        container.close()
+
+        if pcm_frames:
+            pcm = _np.concatenate(pcm_frames, axis=1)
+        else:
+            pcm = _np.zeros((1, self._samples_per_frame), dtype=_np.float32)
+
+        # Resample to 48kHz if needed (edge-tts outputs 24kHz)
+        if pcm.shape[1] > 0:
+            from fractions import Fraction as _Frac
+            target_len = int(pcm.shape[1] * self._sample_rate / 24000)
+            indices = _np.linspace(0, pcm.shape[1] - 1, target_len).astype(int)
+            pcm = pcm[:, indices]
+
+        # Build an AudioFrame
+        frame = _av.AudioFrame.from_ndarray(pcm.astype(_np.float32), format="fltp", layout="mono")
+        frame.sample_rate = self._sample_rate
+        frame.pts = self._timestamp
+        frame.time_base = fractions.Fraction(1, self._sample_rate)
+        self._timestamp += pcm.shape[1]
+        return frame
+
+
+async def webrtc_offer_handler(request: web.Request) -> web.Response:
+    """Handle WebRTC offer from React frontend — stream TTS audio back."""
+    params = await request.json()
+    audio_lang = params.get("audioLang", "en")
+
+    pc = RTCPeerConnection()
+    _active_pcs.add(pc)
+
+    # A queue that receives MP3 chunks from TTS synthesis
+    tts_queue: asyncio.Queue = asyncio.Queue(maxsize=20)
+    track = AudioStreamTrack(tts_queue)
+    pc.addTrack(track)
+
+    # Store the queue on the app so _process_chunk can push to it
+    lang_key = f"webrtc_tts_{audio_lang}"
+    if lang_key not in request.app:
+        request.app[lang_key] = set()
+    request.app[lang_key].add(tts_queue)
+
+    @pc.on("connectionstatechange")
+    async def on_state_change():
+        if pc.connectionState in ("failed", "closed", "disconnected"):
+            _active_pcs.discard(pc)
+            request.app.get(lang_key, set()).discard(tts_queue)
+            await pc.close()
+
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+
+
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client used for OpenRouter requests."""
-
     app["http_client"] = ClientSession()
 
 
 async def on_cleanup(app: web.Application) -> None:
     """Close the shared HTTP client when the server shuts down."""
-
     http: ClientSession = app["http_client"]
     await http.close()
+    # Close all open WebRTC peer connections
+    for pc in list(_active_pcs):
+        await pc.close()
 
 
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
-
     app = web.Application()
+
+    # --- CORS (required for React frontend on any origin) ---
+    cors = aiohttp_cors.setup(app, defaults={
+        "*": aiohttp_cors.ResourceOptions(
+            allow_credentials=False,
+            expose_headers="*",
+            allow_headers="*",
+            allow_methods=["GET", "POST", "OPTIONS"],
+        )
+    })
+
+    # Legacy aiohttp WebSocket UI (kept working)
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/stream", ws_handler)
+
+    # SSE text stream for React frontend
+    sse_route = app.router.add_get("/stream/text", sse_text_handler)
+    cors.add(sse_route)
+
+    # WebRTC audio offer for React frontend
+    webrtc_route = app.router.add_post("/webrtc/offer", webrtc_offer_handler)
+    cors.add(webrtc_route)
+
+    # React frontend static files (served at /app/)
+    frontend_dir = Path(__file__).parent / "frontend"
+    if frontend_dir.is_dir():
+        app.router.add_get("/app", react_index_handler)
+        app.router.add_get("/app/", react_index_handler)
+        app.router.add_get("/app/tv", react_index_handler)
+        app.router.add_static("/app/assets", frontend_dir / "assets", show_index=False)
+
+    # Reports download
     app.router.add_static("/reports", Path(__file__).parent / "reports", show_index=True)
+
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

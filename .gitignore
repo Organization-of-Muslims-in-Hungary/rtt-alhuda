@@ -70,3 +70,4 @@ htmlcov/
 *.mp3
 *.m4a
 !templates/*.wav
+frontend/
