@@ -112,15 +112,24 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+def _template_response(name: str) -> web.StreamResponse:
+    path = REPO_ROOT / "templates" / name
+    if not path.is_file():
+        log(f"Error: template not found at {path}", "error")
+        return web.Response(status=404, text=f"{name} not found")
+    return web.FileResponse(path)
+
+
 async def index_handler(_: web.Request) -> web.StreamResponse:
     """Serve the browser UI from templates/index.html."""
 
-    index_path = REPO_ROOT / "templates" / "index.html"
+    return _template_response("index.html")
 
-    if not index_path.is_file():
-        log(f"Error: index.html not found at {index_path}", "error")
-        return web.Response(status=404, text="index.html not found")
-    return web.FileResponse(index_path)
+
+async def webrtc_test_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the WebRTC signaling test page."""
+
+    return _template_response("webrtc-test.html")
 
 
 async def on_startup(app: web.Application) -> None:
@@ -142,6 +151,7 @@ def create_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
+    app.router.add_get("/webrtc-test.html", webrtc_test_handler)
     app.router.add_get("/stream", ws_handler)
     register_webrtc_routes(app)
     app.on_startup.append(on_startup)

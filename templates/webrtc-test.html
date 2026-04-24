@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>WebRTC test — RTT-Alhuda</title>
+    <style>
+      :root {
+        --bg: #111111;
+        --text: #f1f1f1;
+        --muted: #9ca3af;
+        --line: #374151;
+        --accent: #0ea5e9;
+        --ok: #16a34a;
+        --err: #dc2626;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: var(--bg);
+        color: var(--text);
+        line-height: 1.45;
+      }
+      .wrap {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      h1 {
+        font-size: 1.35rem;
+        margin: 0 0 6px;
+      }
+      .sub {
+        color: var(--muted);
+        font-size: 0.9rem;
+        margin: 0 0 20px;
+      }
+      a {
+        color: var(--accent);
+      }
+      section {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      h2 {
+        font-size: 1rem;
+        margin: 0 0 12px;
+      }
+      label {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      select,
+      button {
+        font: inherit;
+        border-radius: 8px;
+        padding: 8px 12px;
+      }
+      select {
+        background: #1a1a1a;
+        color: var(--text);
+        border: 1px solid var(--line);
+        margin-bottom: 12px;
+      }
+      button {
+        background: #1e293b;
+        color: var(--text);
+        border: 1px solid var(--line);
+        cursor: pointer;
+        margin-right: 8px;
+        margin-bottom: 8px;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+      audio {
+        width: 100%;
+        margin-top: 10px;
+      }
+      #log {
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+        background: #0a0a0a;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 200px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .pill {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid var(--line);
+      }
+      .pill.ok {
+        border-color: var(--ok);
+        color: var(--ok);
+      }
+      .pill.err {
+        border-color: var(--err);
+        color: var(--err);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>WebRTC lab</h1>
+      <p class="sub">
+        Uses this tab’s WebSocket to <code>start</code> recording, then negotiates
+        <code>POST /webrtc/input</code> (server mic) and <code>POST /webrtc/tts</code> (TTS). Keep this page open while testing.
+        <a href="/">← Main app</a>
+      </p>
+
+      <section>
+        <h2>1. Session</h2>
+        <label for="ttsLang">TTS language (voice mapping)</label>
+        <select id="ttsLang">
+          <option value="en">English translation → EN voice</option>
+          <option value="hu">English translation → HU voice</option>
+        </select>
+        <div class="row">
+          <button type="button" id="btnWsStart">Connect WebSocket + start recording</button>
+          <button type="button" id="btnWsStop" disabled>Stop recording + close WS</button>
+        </div>
+        <p>
+          WebSocket:
+          <span id="wsPill" class="pill">idle</span>
+        </p>
+      </section>
+
+      <section>
+        <h2>2. Server microphone (input track)</h2>
+        <div class="row">
+          <button type="button" id="btnMic" disabled>Connect WebRTC (mic)</button>
+          <button type="button" id="btnMicClose" disabled>Disconnect mic PC</button>
+        </div>
+        <span id="micPill" class="pill">off</span>
+        <audio id="audioMic" controls autoplay playsinline></audio>
+      </section>
+
+      <section>
+        <h2>3. TTS track</h2>
+        <div class="row">
+          <button type="button" id="btnTts" disabled>Connect WebRTC (TTS)</button>
+          <button type="button" id="btnTtsClose" disabled>Disconnect TTS PC</button>
+        </div>
+        <span id="ttsPill" class="pill">off</span>
+        <audio id="audioTts" controls autoplay playsinline></audio>
+      </section>
+
+      <section>
+        <h2>Log</h2>
+        <div id="log"></div>
+      </section>
+    </div>
+
+    <script>
+      (function () {
+        const logEl = document.getElementById("log");
+        function log(...args) {
+          const line = new Date().toISOString().slice(11, 23) + " " + args.join(" ");
+          logEl.textContent += line + "\n";
+          logEl.scrollTop = logEl.scrollHeight;
+          console.log(...args);
+        }
+
+        const wsScheme = location.protocol === "https:" ? "wss" : "ws";
+        const wsUrl = wsScheme + "://" + location.host + "/stream";
+
+        let ws = null;
+        let pcMic = null;
+        let pcTts = null;
+
+        const el = (id) => document.getElementById(id);
+
+        function setPill(id, text, ok) {
+          const p = el(id);
+          p.textContent = text;
+          p.className = "pill " + (ok === true ? "ok" : ok === false ? "err" : "");
+        }
+
+        function iceServers() {
+          return [{ urls: "stun:stun.l.google.com:19302" }];
+        }
+
+        async function postSdp(path, offer) {
+          const res = await fetch(path, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sdp: offer.sdp, type: offer.type }),
+          });
+          const text = await res.text();
+          let data;
+          try {
+            data = JSON.parse(text);
+          } catch {
+            throw new Error("Non-JSON: " + text.slice(0, 200));
+          }
+          if (!res.ok) {
+            throw new Error(data.error || res.status + " " + text.slice(0, 200));
+          }
+          return data;
+        }
+
+        async function negotiateWebRtc(path, audioEl, label) {
+          const pc = new RTCPeerConnection({ iceServers: iceServers() });
+          pc.addTransceiver("audio", { direction: "recvonly" });
+
+          pc.ontrack = (ev) => {
+            log(label, "ontrack", ev.track.kind);
+            if (ev.streams[0]) {
+              audioEl.srcObject = ev.streams[0];
+            } else {
+              const ms = new MediaStream([ev.track]);
+              audioEl.srcObject = ms;
+            }
+          };
+
+          pc.oniceconnectionstatechange = () =>
+            log(label, "iceConnectionState", pc.iceConnectionState);
+          pc.onconnectionstatechange = () =>
+            log(label, "connectionState", pc.connectionState);
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          log(label, "localDescription set, POST", path);
+          const answer = await postSdp(path, pc.localDescription);
+          await pc.setRemoteDescription(
+            new RTCSessionDescription({ sdp: answer.sdp, type: answer.type }),
+          );
+          log(label, "remoteDescription set");
+          return pc;
+        }
+
+        el("btnWsStart").onclick = () => {
+          if (ws && ws.readyState === WebSocket.OPEN) return;
+          ws = new WebSocket(wsUrl);
+          setPill("wsPill", "connecting…", null);
+          el("btnWsStart").disabled = true;
+
+          ws.onopen = () => {
+            const lang = el("ttsLang").value;
+            ws.send(JSON.stringify({ type: "start", ttsLanguage: lang }));
+            setPill("wsPill", "open + recording", true);
+            log("WebSocket open, sent start", lang);
+            el("btnWsStop").disabled = false;
+            el("btnMic").disabled = false;
+            el("btnTts").disabled = false;
+          };
+
+          ws.onerror = (e) => {
+            log("WebSocket error", e);
+            setPill("wsPill", "error", false);
+            el("btnWsStart").disabled = false;
+          };
+
+          ws.onclose = () => {
+            log("WebSocket closed");
+            setPill("wsPill", "closed", null);
+            el("btnWsStart").disabled = false;
+            el("btnWsStop").disabled = true;
+            el("btnMic").disabled = true;
+            el("btnTts").disabled = true;
+          };
+
+          ws.onmessage = (ev) => {
+            try {
+              const j = JSON.parse(ev.data);
+              if (j.type === "log") {
+                log("[server]", j.level, j.message);
+              }
+            } catch {
+              /* ignore non-JSON */
+            }
+          };
+        };
+
+        el("btnWsStop").onclick = () => {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: "stop" }));
+            } catch (_) {}
+            ws.close();
+          }
+          ws = null;
+        };
+
+        el("btnMic").onclick = async () => {
+          try {
+            el("btnMic").disabled = true;
+            if (pcMic) {
+              pcMic.close();
+              pcMic = null;
+            }
+            pcMic = await negotiateWebRtc(
+              "/webrtc/input",
+              el("audioMic"),
+              "mic",
+            );
+            setPill("micPill", "connected", true);
+            el("btnMicClose").disabled = false;
+          } catch (e) {
+            log("Mic WebRTC failed", e.message || e);
+            setPill("micPill", "failed", false);
+            el("btnMic").disabled = false;
+          }
+        };
+
+        el("btnMicClose").onclick = () => {
+          if (pcMic) {
+            pcMic.close();
+            pcMic = null;
+          }
+          el("audioMic").srcObject = null;
+          setPill("micPill", "off", null);
+          el("btnMicClose").disabled = true;
+          el("btnMic").disabled = !ws || ws.readyState !== WebSocket.OPEN;
+        };
+
+        el("btnTts").onclick = async () => {
+          try {
+            el("btnTts").disabled = true;
+            if (pcTts) {
+              pcTts.close();
+              pcTts = null;
+            }
+            pcTts = await negotiateWebRtc("/webrtc/tts", el("audioTts"), "tts");
+            setPill("ttsPill", "connected", true);
+            el("btnTtsClose").disabled = false;
+          } catch (e) {
+            log("TTS WebRTC failed", e.message || e);
+            setPill("ttsPill", "failed", false);
+            el("btnTts").disabled = false;
+          }
+        };
+
+        el("btnTtsClose").onclick = () => {
+          if (pcTts) {
+            pcTts.close();
+            pcTts = null;
+          }
+          el("audioTts").srcObject = null;
+          setPill("ttsPill", "off", null);
+          el("btnTtsClose").disabled = true;
+          el("btnTts").disabled = !ws || ws.readyState !== WebSocket.OPEN;
+        };
+
+        window.addEventListener("beforeunload", () => {
+          if (pcMic) pcMic.close();
+          if (pcTts) pcTts.close();
+          if (ws && ws.readyState === WebSocket.OPEN) ws.close();
+        });
+      })();
+    </script>
+  </body>
+</html>

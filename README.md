@@ -35,6 +35,8 @@ python main.py
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 
+**WebRTC test page:** [http://127.0.0.1:3000/webrtc-test.html](http://127.0.0.1:3000/webrtc-test.html) — connects the WebSocket, starts recording, then lets you negotiate `/webrtc/input` and `/webrtc/tts` and hear both tracks in-page.
+
 ## Architecture
 
 - The browser UI in [templates/index.html](templates/index.html) opens a WebSocket to [main.py](main.py).
