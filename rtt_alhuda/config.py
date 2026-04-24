@@ -19,3 +19,24 @@ CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 FRAME_CHUNK_SECONDS = 0.1
 MAX_BUFFER_SECONDS = 120  # Increased to prevent dropping audio during API delays
+
+OPENROUTER_TTS_URL = os.getenv(
+    "OPENROUTER_TTS_URL", "https://openrouter.ai/api/v1/tts"
+)
+OPENROUTER_TTS_MODEL = os.getenv(
+    "OPENROUTER_TTS_MODEL", "openai/gpt-4o-mini-tts-2025-12-15"
+)
+OPENROUTER_TTS_VOICE_EN = os.getenv("OPENROUTER_TTS_VOICE_EN", "alloy")
+OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "alloy")
+OPENROUTER_TTS_RESPONSE_FORMAT = os.getenv("OPENROUTER_TTS_RESPONSE_FORMAT", "wav")
+WEBRTC_STUN_URLS = os.getenv(
+    "WEBRTC_STUN_URLS", "stun:stun.l.google.com:19302"
+)
+
+
+def voice_for_tts_language(language: str) -> str:
+    """Map UI language code to OpenRouter TTS `voice` (API has no separate language field)."""
+
+    if language == "hu":
+        return OPENROUTER_TTS_VOICE_HU
+    return OPENROUTER_TTS_VOICE_EN
