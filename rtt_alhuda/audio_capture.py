@@ -58,6 +58,13 @@ async def capture_microphone_loop(client: ClientState) -> None:
                         overflow_bytes = overflow_samples * bytes_per_frame
                         del client.pcm_buffer[:overflow_bytes]
                         client.buffer_start_sample += overflow_samples
+
+                mic_q = client.media_mic_queue
+                if mic_q is not None:
+                    try:
+                        mic_q.put_nowait(pcm_bytes)
+                    except asyncio.QueueFull:
+                        pass
     except Exception as exc:
         await send_log(client, f"Microphone error: {exc}", "error")
         client.recording = False

@@ -12,6 +12,7 @@ from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.config import REPO_ROOT
 from rtt_alhuda.models import ClientState
 from rtt_alhuda.web_protocol import send_log
+from rtt_alhuda.webrtc_endpoints import register_webrtc_routes
 
 
 def get_hours_timestamp() -> str:
@@ -39,6 +40,8 @@ async def stop_recording(client: ClientState) -> None:
 
     client.recorder_task = None
     client.processor_task = None
+    client.media_mic_queue = None
+    client.media_tts_queue = None
 
 
 async def start_recording(client: ClientState, http: ClientSession) -> None:
@@ -55,6 +58,9 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
     client.chunk_history.clear()
     client.last_chunk_end_sample = 0
 
+    client.media_mic_queue = asyncio.Queue(maxsize=50)
+    client.media_tts_queue = asyncio.Queue(maxsize=8)
+
     client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
     client.processor_task = asyncio.create_task(process_audio_loop(client, http))
     await send_log(client, "Recording started")
@@ -68,6 +74,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     http: ClientSession = request.app["http_client"]
     client = ClientState(ws=ws)
+    request.app["last_ws_client"] = client
 
     await send_log(client, "WebSocket connected")
     log("WebSocket client connected")
@@ -83,6 +90,11 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
                 msg_type = payload.get("type")
                 if msg_type == "start":
+                    lang_raw = payload.get("ttsLanguage") or payload.get("tts_language") or "en"
+                    if isinstance(lang_raw, str) and lang_raw.lower() in ("hu", "hungarian"):
+                        client.media_tts_language = "hu"
+                    else:
+                        client.media_tts_language = "en"
                     await start_recording(client, http)
                 elif msg_type == "stop":
                     await stop_recording(client)
@@ -93,6 +105,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 await send_log(client, f"WebSocket error: {ws.exception()}", "error")
     finally:
         await stop_recording(client)
+        if request.app.get("last_ws_client") is client:
+            request.app["last_ws_client"] = None
         log("WebSocket client disconnected")
 
     return ws
@@ -129,6 +143,7 @@ def create_app() -> web.Application:
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/stream", ws_handler)
+    register_webrtc_routes(app)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

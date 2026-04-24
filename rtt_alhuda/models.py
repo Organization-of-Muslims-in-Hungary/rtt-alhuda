@@ -31,3 +31,7 @@ class ClientState:
     recording: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_chunk_end_sample: int = 0
+    # WebRTC v1: optional taps (created when recording starts).
+    media_mic_queue: Optional[asyncio.Queue[bytes]] = None
+    media_tts_queue: Optional[asyncio.Queue[bytes]] = None
+    media_tts_language: str = "en"

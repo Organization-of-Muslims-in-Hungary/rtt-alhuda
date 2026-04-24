@@ -19,7 +19,24 @@ from rtt_alhuda.config import (
 )
 from rtt_alhuda.models import ChunkInfo, ClientState
 from rtt_alhuda.transcription_openrouter import send_chunk_to_openrouter
+from rtt_alhuda.tts_openrouter import TtsLanguage, synthesize_speech_bytes
 from rtt_alhuda.web_protocol import send_log, send_transcription
+
+
+async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> None:
+    """Fetch TTS audio and push one WAV blob onto the WebRTC TTS queue."""
+
+    q = client.media_tts_queue
+    if q is None:
+        return
+    try:
+        lang: TtsLanguage = "hu" if client.media_tts_language == "hu" else "en"
+        audio_bytes, _ = await synthesize_speech_bytes(http, text=text, language=lang)
+        if audio_bytes:
+            await q.put(audio_bytes)
+    except Exception as exc:
+        if not client.ws.closed:
+            await send_log(client, f"TTS error: {exc}", "error")
 
 
 async def _process_chunk(
@@ -69,6 +86,12 @@ async def _process_chunk(
             "latencyMs": latency_ms,
         }
         await send_transcription(client, message)
+
+        if new_translation.strip() and client.media_tts_queue is not None:
+            asyncio.create_task(
+                _enqueue_tts(client, http, new_translation.strip()),
+                name="tts-enqueue",
+            )
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
         await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
