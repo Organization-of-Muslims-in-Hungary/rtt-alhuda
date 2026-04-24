@@ -3,8 +3,9 @@
 import os
 from typing import Literal
 
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
+from rtt_alhuda import openrouter_debug as ord
 from rtt_alhuda.config import (
     OPENROUTER_TTS_MODEL,
     OPENROUTER_TTS_RESPONSE_FORMAT,
@@ -30,9 +31,22 @@ async def synthesize_speech_bytes(
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
+        ord.error("Refusing TTS request: OPENROUTER_API_KEY is not set.")
         raise RuntimeError("Missing OPENROUTER_API_KEY environment variable")
 
     voice_id = voice or voice_for_tts_language(language)
+    ord.debug(
+        "POST",
+        OPENROUTER_TTS_URL,
+        "| model:",
+        OPENROUTER_TTS_MODEL,
+        "| voice:",
+        voice_id,
+        "| language:",
+        language,
+        "| text_chars:",
+        len(text),
+    )
     payload: dict = {
         "input": text,
         "model": OPENROUTER_TTS_MODEL,
@@ -48,15 +62,42 @@ async def synthesize_speech_bytes(
         "X-Title": "rtt-alhuda-tts",
     }
 
-    async with http.post(
-        OPENROUTER_TTS_URL,
-        json=payload,
-        headers=headers,
-        timeout=ClientTimeout(total=timeout_s),
-    ) as resp:
-        gen_id = resp.headers.get("X-Generation-Id")
-        body = await resp.read()
-        if resp.status < 200 or resp.status >= 300:
-            raise RuntimeError(f"TTS error {resp.status}: {body[:500]!r}")
-
-    return body, gen_id
+    try:
+        async with http.post(
+            OPENROUTER_TTS_URL,
+            json=payload,
+            headers=headers,
+            timeout=ClientTimeout(total=timeout_s),
+        ) as resp:
+            gen_id = resp.headers.get("X-Generation-Id")
+            body = await resp.read()
+            if resp.status < 200 or resp.status >= 300:
+                try:
+                    snippet = body[:1200].decode("utf-8", errors="replace")
+                except Exception:
+                    snippet = repr(body[:400])
+                ord.warn(
+                    "TTS failed | HTTP",
+                    resp.status,
+                    "| X-Generation-Id:",
+                    gen_id,
+                    "| body (truncated):",
+                    snippet,
+                )
+                if resp.status in (401, 403):
+                    ord.warn(
+                        "Likely invalid API key — verify OPENROUTER_API_KEY at https://openrouter.ai/keys",
+                    )
+                raise RuntimeError(f"TTS error {resp.status}: {body[:500]!r}")
+            ord.debug(
+                "TTS OK | HTTP",
+                resp.status,
+                "| audio_bytes:",
+                len(body),
+                "| X-Generation-Id:",
+                gen_id,
+            )
+            return body, gen_id
+    except ClientError as exc:
+        ord.error("TTS network error:", repr(exc))
+        raise RuntimeError(f"OpenRouter TTS connection error: {exc}") from exc

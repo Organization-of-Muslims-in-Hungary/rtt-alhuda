@@ -10,6 +10,9 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 load_dotenv(dotenv_path=REPO_ROOT / ".env", override=False)
 
+# Set to 1/true/yes for extra per-request OpenRouter logs (URLs, status, body snippets).
+OPENROUTER_DEBUG = os.getenv("OPENROUTER_DEBUG", "").lower() in ("1", "true", "yes")
+
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-3.1-flash-lite-preview")
 PROCESSING_INTERVAL_SECONDS = 3

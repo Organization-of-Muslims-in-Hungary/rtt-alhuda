@@ -27,6 +27,8 @@ OPENROUTER_MODEL=google/gemini-3.1-flash-lite-preview
 
 See [.env.example](.env.example) for all optional keys.
 
+**Debugging OpenRouter:** On server start, the terminal prints chat/TTS URLs, models, and a **masked** `OPENROUTER_API_KEY` status. On HTTP errors (e.g. wrong key), lines prefixed with `[OpenRouter] WARN:` include status and a **truncated** response body. Set `OPENROUTER_DEBUG=1` for per-request logs (still no secrets).
+
 ## Run
 
 ```bash

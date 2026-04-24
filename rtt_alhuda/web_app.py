@@ -12,6 +12,7 @@ from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.config import REPO_ROOT
 from rtt_alhuda.models import ClientState
 from rtt_alhuda.web_protocol import send_log
+from rtt_alhuda.openrouter_debug import log_startup_summary
 from rtt_alhuda.webrtc_endpoints import register_webrtc_routes
 
 
@@ -136,6 +137,7 @@ async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client used for OpenRouter requests."""
 
     app["http_client"] = ClientSession()
+    log_startup_summary()
 
 
 async def on_cleanup(app: web.Application) -> None:

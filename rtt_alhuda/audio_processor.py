@@ -94,7 +94,12 @@ async def _process_chunk(
             )
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
-        await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
+        await send_log(
+            client,
+            f"Error processing chunk ({type(exc).__name__}): {exc} "
+            "(check server terminal for [OpenRouter] lines)",
+            "error",
+        )
     except Exception as exc:
         await send_log(
             client,

@@ -3,9 +3,10 @@
 import json
 import os
 
-from aiohttp import ClientSession, ClientTimeout
+from aiohttp import ClientError, ClientSession, ClientTimeout
 
 from rtt_alhuda.config import OPENROUTER_API_URL, OPENROUTER_MODEL
+from rtt_alhuda import openrouter_debug as ord
 
 
 async def send_chunk_to_openrouter(
@@ -18,7 +19,17 @@ async def send_chunk_to_openrouter(
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
+        ord.error("Refusing request: OPENROUTER_API_KEY is not set (check .env next to main.py).")
         raise RuntimeError("Missing OPENROUTER_API_KEY environment variable")
+
+    ord.debug(
+        "POST",
+        OPENROUTER_API_URL,
+        "| model:",
+        OPENROUTER_MODEL,
+        "| base64_wav_chars:",
+        len(audio_b64_wav),
+    )
 
     system = """
     You are a live transcriber and translator.
@@ -96,16 +107,36 @@ async def send_chunk_to_openrouter(
         "X-Title": "rtt-alhuda-node",
     }
 
-    async with http.post(
-        OPENROUTER_API_URL,
-        json=body,
-        headers=headers,
-        timeout=ClientTimeout(total=120),
-    ) as resp:
-        raw_text = await resp.text()
-        if resp.status < 200 or resp.status >= 300:
-            raise RuntimeError(f"OpenRouter error ({resp.status}): {raw_text}")
-        payload = json.loads(raw_text)
+    try:
+        async with http.post(
+            OPENROUTER_API_URL,
+            json=body,
+            headers=headers,
+            timeout=ClientTimeout(total=120),
+        ) as resp:
+            raw_text = await resp.text()
+            if resp.status < 200 or resp.status >= 300:
+                snippet = raw_text[:1200] if raw_text else "(empty body)"
+                ord.warn(
+                    "chat/completions failed | HTTP",
+                    resp.status,
+                    "| body (truncated):",
+                    snippet,
+                )
+                if resp.status in (401, 403):
+                    ord.warn(
+                        "Likely invalid or unauthorized API key — verify OPENROUTER_API_KEY at https://openrouter.ai/keys",
+                    )
+                raise RuntimeError(f"OpenRouter error ({resp.status}): {raw_text}")
+            ord.debug("chat/completions OK | HTTP", resp.status, "| response_chars:", len(raw_text))
+            try:
+                payload = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                ord.error("chat/completions: response is not JSON |", repr(raw_text[:500]))
+                raise RuntimeError(f"OpenRouter returned non-JSON: {exc}") from exc
+    except ClientError as exc:
+        ord.error("chat/completions network error:", repr(exc))
+        raise RuntimeError(f"OpenRouter connection error: {exc}") from exc
 
     content = payload.get("choices", [{}])[0].get("message", {}).get("content", "{}")
     if isinstance(content, str):
