@@ -32,6 +32,7 @@ from typing import Optional
 if os.name == "nt" and sys.version_info >= (3, 14):
     platform.system = lambda: "Windows"
 
+import edge_tts
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 from dotenv import load_dotenv
 
@@ -46,26 +47,47 @@ OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "google/gemini-3.1-flash-lite-preview")
 PROCESSING_INTERVAL_SECONDS = 3
 CONTEXT_CHUNK_COUNT = 2  # Number of past chunks to include in the payload for context
-SAMPLE_RATE = 16000
+SAMPLE_RATE = 44100  # USB mic native rate
+VAD_RATE = 16000     # WebRTC VAD requires 8k/16k/32k/48k
 CHANNELS = 1
 SAMPLE_WIDTH_BYTES = 2
 FRAME_CHUNK_SECONDS = 0.1
 MAX_BUFFER_SECONDS = 120  # Increased to prevent dropping audio during API delays
 
 
+def _downsample_to_16k(pcm_data: bytes, from_rate: int = SAMPLE_RATE) -> bytes:
+    """Simple integer-ratio downsample from 44100 to 16000 (via linear interp)."""
+    import struct as _struct
+    samples = _struct.unpack(f"<{len(pcm_data)//2}h", pcm_data)
+    ratio = from_rate / VAD_RATE
+    out_len = int(len(samples) / ratio)
+    out = []
+    for i in range(out_len):
+        src = i * ratio
+        idx = int(src)
+        if idx >= len(samples) - 1:
+            out.append(samples[-1])
+        else:
+            frac = src - idx
+            out.append(int(samples[idx] * (1 - frac) + samples[idx + 1] * frac))
+    return _struct.pack(f"<{len(out)}h", *out)
+
+
 def is_speech_present(pcm_data: bytes) -> bool:
     """Check if a PCM audio chunk contains speech using WebRTC VAD."""
     try:
+        # Downsample to 16kHz for VAD (which only supports 8k/16k/32k/48k)
+        pcm_16k = _downsample_to_16k(pcm_data)
         # WebRTC VAD requires exact frame durations: 10, 20, or 30 ms.
         frame_duration_ms = 30
-        frame_bytes = int((SAMPLE_RATE * frame_duration_ms / 1000.0) * CHANNELS * SAMPLE_WIDTH_BYTES)
+        frame_bytes = int((VAD_RATE * frame_duration_ms / 1000.0) * CHANNELS * SAMPLE_WIDTH_BYTES)
         
         speech_frames = 0
         total_frames = 0
         
-        for i in range(0, len(pcm_data) - frame_bytes + 1, frame_bytes):
-            frame = pcm_data[i:i+frame_bytes]
-            if vad.is_speech(frame, SAMPLE_RATE):
+        for i in range(0, len(pcm_16k) - frame_bytes + 1, frame_bytes):
+            frame = pcm_16k[i:i+frame_bytes]
+            if vad.is_speech(frame, VAD_RATE):
                 speech_frames += 1
             total_frames += 1
             
@@ -77,6 +99,58 @@ def is_speech_present(pcm_data: bytes) -> bool:
         return True  # Fallback to true so we don't drop audio falsely
 
 
+# =========================================================================
+# TTS Configuration
+# =========================================================================
+EDGE_TTS_EN_VOICE = "en-US-AndrewMultilingualNeural"  # Natural US male voice
+EDGE_TTS_HU_VOICE = "hu-HU-TamasNeural"  # Hungarian male neural voice
+
+
+async def synthesize_edge_tts(text: str, voice: str) -> bytes | None:
+    """Generate MP3 audio using Microsoft Edge neural TTS.
+    
+    Splits long text into ~500 char segments at sentence boundaries
+    to avoid crashes with very long text.
+    """
+    if not text or not text.strip():
+        return None
+    try:
+        # Split long text into segments at sentence boundaries
+        segments = _split_text_for_tts(text, max_chars=500)
+        all_audio = []
+        for seg in segments:
+            communicate = edge_tts.Communicate(seg, voice)
+            async for chunk in communicate.stream():
+                if chunk["type"] == "audio":
+                    all_audio.append(chunk["data"])
+        if all_audio:
+            return b"".join(all_audio)
+        return None
+    except Exception as e:
+        log(f"Edge TTS ({voice}) error: {e}")
+        return None
+
+
+def _split_text_for_tts(text: str, max_chars: int = 500) -> list[str]:
+    """Split text into segments at sentence boundaries."""
+    if len(text) <= max_chars:
+        return [text]
+    segments = []
+    current = ""
+    for sentence in text.replace(". ", ".\n").split("\n"):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(current) + len(sentence) + 1 > max_chars and current:
+            segments.append(current.strip())
+            current = sentence
+        else:
+            current = current + " " + sentence if current else sentence
+    if current.strip():
+        segments.append(current.strip())
+    return segments if segments else [text]
+
+
 @dataclass
 class ChunkInfo:
     """Stores exact sample boundaries and results for a transcribed audio chunk."""
@@ -84,6 +158,7 @@ class ChunkInfo:
     end_sample: int
     transcription: str
     translation: str
+    translation_hu: str = ""
 
 
 @dataclass
@@ -192,6 +267,7 @@ async def send_chunk_to_openrouter(
     audio_b64_wav: str,
     original_transcription: str,
     original_translation: str,
+    original_translation_hu: str = "",
 ) -> dict:
     """Send one audio window to OpenRouter and return the parsed JSON result."""
 
@@ -202,16 +278,16 @@ async def send_chunk_to_openrouter(
     system = """
     You are a live transcriber and translator.
      
-    You will be given an audio stream chunk and an existing transcription and translation. Transcribe and translate the new words
-    in the audio with Arabic transcription (أ ب ت ...), and English translation.
+    You will be given an audio stream chunk and an existing transcription and translations. Transcribe and translate the new words
+    in the audio with Arabic transcription (أ ب ت ...), English translation, AND Hungarian translation.
      
     YOUR JOB: append only the NEW words that have been said in the given audio.
 
-    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat what is already in the original transcription/translation!. 
-    ONLY respond with the new additional transcription and translation that is IN THE AUDIO and NOT included in the original transcription and translation. 
+    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat what is already in the original transcription/translations!. 
+    ONLY respond with the new additional transcription and translations that are IN THE AUDIO and NOT included in the original transcription and translations. 
     If the the audio contains speech that is already written in the original transcription, DO NOT repeat it again in your response.
 
-    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
+    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": "", "new_additional_translation_hu": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
 
     Do NOT autocomplete! or hallucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
     
@@ -234,7 +310,8 @@ async def send_chunk_to_openrouter(
                         "type": "text",
                         "text": (
                             f'"original_transcription": "{original_transcription}", '
-                            f'"original_translation": "{original_translation}"'
+                            f'"original_translation": "{original_translation}", '
+                            f'"original_translation_hu": "{original_translation_hu}"'
                         ),
                     },
                     {
@@ -257,10 +334,12 @@ async def send_chunk_to_openrouter(
                     "required": [
                         "new_additional_transcription",
                         "new_additional_translation",
+                        "new_additional_translation_hu",
                     ],
                     "properties": {
                         "new_additional_transcription": {"type": "string"},
                         "new_additional_translation": {"type": "string"},
+                        "new_additional_translation_hu": {"type": "string"},
                     },
                     "additionalProperties": False,
                 },
@@ -308,6 +387,7 @@ async def _process_chunk(
     new_audio_end_sample: int,
     original_transcription: str,
     original_translation: str,
+    original_translation_hu: str,
     chunk_duration_seconds: float,
 ):
     try:
@@ -317,11 +397,19 @@ async def _process_chunk(
             wav_b64,
             original_transcription,
             original_translation,
+            original_translation_hu,
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
         new_transcription = str(result.get("new_additional_transcription", ""))
         new_translation = str(result.get("new_additional_translation", ""))
+        new_translation_hu = str(result.get("new_additional_translation_hu", ""))
+
+        # Generate TTS for both languages in parallel
+        tts_en_bytes, tts_hu_bytes = await asyncio.gather(
+            synthesize_edge_tts(new_translation, EDGE_TTS_EN_VOICE) if new_translation.strip() else asyncio.sleep(0, result=None),
+            synthesize_edge_tts(new_translation_hu, EDGE_TTS_HU_VOICE) if new_translation_hu.strip() else asyncio.sleep(0, result=None),
+        )
 
         async with client.lock:
             client.chunk_history.append(
@@ -330,6 +418,7 @@ async def _process_chunk(
                     end_sample=new_audio_end_sample,
                     transcription=new_transcription,
                     translation=new_translation,
+                    translation_hu=new_translation_hu,
                 )
             )
 
@@ -337,8 +426,10 @@ async def _process_chunk(
             "type": "transcription",
             "transcription": new_transcription,
             "translation": new_translation,
+            "translationHu": new_translation_hu,
             "originalTranscription": original_transcription,
             "originalTranslation": original_translation,
+            "originalTranslationHu": original_translation_hu,
             "rawResponse": json.dumps(result),
             "originalAudioChunk": wav_b64,
             "processedChunks": 1,
@@ -346,6 +437,12 @@ async def _process_chunk(
             "chunkDurationSeconds": chunk_duration_seconds,
             "latencyMs": latency_ms,
         }
+        # Add TTS audio as base64
+        if tts_en_bytes:
+            message["ttsEnAudio"] = base64.b64encode(tts_en_bytes).decode("ascii")
+        if tts_hu_bytes:
+            message["ttsHuAudio"] = base64.b64encode(tts_hu_bytes).decode("ascii")
+
         if not client.ws.closed:
             await client.ws.send_str(json.dumps(message))
 
@@ -392,10 +489,12 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                     past_start_sample = history_to_include[0].start_sample
                     original_transcription = " ".join(c.transcription for c in history_to_include if c.transcription).strip()
                     original_translation = " ".join(c.translation for c in history_to_include if c.translation).strip()
+                    original_translation_hu = " ".join(c.translation_hu for c in history_to_include if c.translation_hu).strip()
                 else:
                     past_start_sample = client.last_chunk_end_sample
                     original_transcription = ""
                     original_translation = ""
+                    original_translation_hu = ""
 
                 new_audio_start_sample = client.last_chunk_end_sample
                 new_audio_end_sample = end_sample
@@ -448,6 +547,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 new_audio_end_sample,
                 original_transcription,
                 original_translation,
+                original_translation_hu,
                 chunk_duration_seconds=total_samples / SAMPLE_RATE,
             )
 
@@ -496,6 +596,87 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
     await send_log(client, "Recording started")
 
 
+async def generate_final_report(client: ClientState) -> None:
+    """Generate final khutbah report: text files + full TTS audio files."""
+    await send_log(client, "Generating final report...")
+
+    async with client.lock:
+        history = list(client.chunk_history)
+
+    if not history:
+        await send_log(client, "No chunks to generate report from", "warn")
+        return
+
+    # Combine all text
+    full_arabic = " ".join(c.transcription for c in history if c.transcription).strip()
+    full_english = " ".join(c.translation for c in history if c.translation).strip()
+    full_hungarian = " ".join(c.translation_hu for c in history if c.translation_hu).strip()
+
+    # Create reports directory
+    reports_dir = Path(__file__).parent / "reports"
+    reports_dir.mkdir(exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    prefix = f"khutbah_{timestamp}"
+
+    # Write text files immediately
+    files_created = []
+
+    arabic_path = reports_dir / f"{prefix}_arabic.txt"
+    arabic_path.write_text(full_arabic, encoding="utf-8")
+    files_created.append(("Arabic Text", f"/reports/{arabic_path.name}"))
+    await send_log(client, f"Saved: {arabic_path.name}")
+
+    english_path = reports_dir / f"{prefix}_english.txt"
+    english_path.write_text(full_english, encoding="utf-8")
+    files_created.append(("English Translation", f"/reports/{english_path.name}"))
+    await send_log(client, f"Saved: {english_path.name}")
+
+    hungarian_path = reports_dir / f"{prefix}_hungarian.txt"
+    hungarian_path.write_text(full_hungarian, encoding="utf-8")
+    files_created.append(("Hungarian Translation", f"/reports/{hungarian_path.name}"))
+    await send_log(client, f"Saved: {hungarian_path.name}")
+
+    # Send text file links immediately so user can download right away
+    text_msg = {
+        "type": "report_ready",
+        "files": [{"label": label, "url": url} for label, url in files_created],
+        "timestamp": timestamp,
+    }
+    if not client.ws.closed:
+        await client.ws.send_str(json.dumps(text_msg))
+
+    # Generate full TTS audio files (may take time for long text)
+    try:
+        await send_log(client, "Generating audio files (this may take a minute)...")
+        for lang_text, voice, suffix in [
+            (full_english, EDGE_TTS_EN_VOICE, "english"),
+            (full_hungarian, EDGE_TTS_HU_VOICE, "hungarian"),
+        ]:
+            if not lang_text:
+                continue
+            audio_data = await synthesize_edge_tts(lang_text, voice)
+            if audio_data:
+                audio_path = reports_dir / f"{prefix}_{suffix}.mp3"
+                audio_path.write_bytes(audio_data)
+                files_created.append((f"{suffix.title()} Audio", f"/reports/{audio_path.name}"))
+                await send_log(client, f"Saved: {audio_path.name}")
+    except Exception as e:
+        await send_log(client, f"Audio generation error: {e}", "error")
+        log(f"TTS report error: {e}")
+
+    # Send final report with all files (text + audio)
+    report_msg = {
+        "type": "report_ready",
+        "files": [{"label": label, "url": url} for label, url in files_created],
+        "timestamp": timestamp,
+    }
+    if not client.ws.closed:
+        await client.ws.send_str(json.dumps(report_msg))
+
+    await send_log(client, f"Report complete! {len(files_created)} files generated.")
+
+
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     """Handle browser control messages for a single WebSocket session."""
 
@@ -523,6 +704,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 elif msg_type == "stop":
                     await stop_recording(client)
                     await send_log(client, "Recording stopped")
+                elif msg_type == "generate_report":
+                    await generate_final_report(client)
                 else:
                     await send_log(client, f"Unknown message type: {msg_type}", "warn")
             elif msg.type == WSMsgType.ERROR:
@@ -565,11 +748,12 @@ def create_app() -> web.Application:
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/stream", ws_handler)
+    app.router.add_static("/reports", Path(__file__).parent / "reports", show_index=True)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
 
 
 if __name__ == "__main__":
-    log("Server is running on http://localhost:3000")
-    web.run_app(create_app(), host="127.0.0.1", port=3000)
+    log("Server is running on http://0.0.0.0:80")
+    web.run_app(create_app(), host="0.0.0.0", port=80)

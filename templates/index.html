@@ -343,6 +343,12 @@
       <div class="controls">
         <button class="btn-start" id="start-btn">Start Recording</button>
         <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
+        <button id="report-btn" disabled style="border-color:#93c5fd;background:#eff6ff;color:#1e40af;">Generate Report</button>
+      </div>
+
+      <div id="report-panel" style="display:none;border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:16px;background:#0a1628;">
+        <h3 style="margin:0 0 10px;font-size:15px;color:var(--accent);">Khutbah Report</h3>
+        <div id="report-links"></div>
       </div>
 
       <div class="panes">
@@ -356,10 +362,17 @@
             </div>
           </section>
           <section class="stream-panel">
-            <div class="label">Translation</div>
+            <div class="label" style="display:flex;align-items:center;gap:8px;">Translation (English) <button id="play-en-btn" style="font-size:12px;padding:4px 10px;border-radius:6px;">▶ Play</button></div>
             <div class="text" id="translation-stream">
               <span id="translation-committed"></span
               ><span id="translation-provisional" class="provisional"></span>
+            </div>
+          </section>
+          <section class="stream-panel">
+            <div class="label" style="display:flex;align-items:center;gap:8px;">Fordítás (Magyar) <button id="play-hu-btn" style="font-size:12px;padding:4px 10px;border-radius:6px;">▶ Play</button></div>
+            <div class="text" id="translation-hu-stream">
+              <span id="translation-hu-committed"></span
+              ><span id="translation-hu-provisional" class="provisional"></span>
             </div>
           </section>
         </section>
@@ -399,6 +412,38 @@
       const translationCommitted = document.getElementById(
         "translation-committed",
       );
+      const translationHuCommitted = document.getElementById(
+        "translation-hu-committed",
+      );
+
+      // TTS audio storage — only plays on button click
+      const ttsChunksEn = [];  // collected English MP3 base64 chunks
+      const ttsChunksHu = [];  // collected Hungarian MP3 base64 chunks
+      let currentAudio = null;
+
+      function stopCurrentAudio() {
+        if (currentAudio) {
+          currentAudio.pause();
+          currentAudio.src = '';
+          currentAudio = null;
+        }
+      }
+
+      function playAllChunks(chunks, btn) {
+        stopCurrentAudio();
+        if (chunks.length === 0) return;
+        let idx = 0;
+        btn.disabled = true;
+        function playNext() {
+          if (idx >= chunks.length) { btn.disabled = false; return; }
+          const audio = new Audio('data:audio/mp3;base64,' + chunks[idx++]);
+          currentAudio = audio;
+          audio.onended = playNext;
+          audio.onerror = playNext;
+          audio.play().catch(playNext);
+        }
+        playNext();
+      }
 
       function appendCommittedText(target, chunk, joiner = " ") {
         if (!target) return;
@@ -532,6 +577,10 @@
         requestedRecording = false;
         transcriptionCommitted.textContent = "";
         translationCommitted.textContent = "";
+        translationHuCommitted.textContent = "";
+        ttsChunksEn.length = 0;
+        ttsChunksHu.length = 0;
+        stopCurrentAudio();
         networkList.replaceChildren();
         serverLog.replaceChildren();
       }
@@ -575,14 +624,39 @@
             if (msg?.type === "transcription") {
               const trans = msg.transcription ?? "";
               const trad = msg.translation ?? "";
+              const tradHu = msg.translationHu ?? "";
               appendCommittedText(transcriptionCommitted, trans);
               appendCommittedText(translationCommitted, trad, " ");
+              appendCommittedText(translationHuCommitted, tradHu, " ");
+
+              // Store TTS audio for on-demand playback
+              if (msg.ttsEnAudio) ttsChunksEn.push(msg.ttsEnAudio);
+              if (msg.ttsHuAudio) ttsChunksHu.push(msg.ttsHuAudio);
 
               addNetworkRequest(msg);
               return;
             }
 
             if (msg?.type === "audio_chunk") {
+              return;
+            }
+
+            if (msg?.type === "report_ready") {
+              const panel = document.getElementById("report-panel");
+              const links = document.getElementById("report-links");
+              panel.style.display = "block";
+              links.innerHTML = "";
+              (msg.files || []).forEach(f => {
+                const a = document.createElement("a");
+                a.href = f.url;
+                a.download = "";
+                a.target = "_blank";
+                a.textContent = f.label;
+                a.style.cssText = "display:inline-block;margin:4px 8px 4px 0;padding:6px 14px;border-radius:8px;background:#1e3a5f;color:#93c5fd;text-decoration:none;font-size:13px;";
+                links.appendChild(a);
+              });
+              document.getElementById("report-btn").disabled = false;
+              document.getElementById("report-btn").textContent = "Generate Report";
               return;
             }
 
@@ -648,12 +722,29 @@
 
       stopBtn.addEventListener("click", () => {
         requestedRecording = false;
+        stopCurrentAudio();
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: "stop" }));
         }
         statusText.textContent = ws ? "Connected" : "Stopped";
         startBtn.disabled = false;
         stopBtn.disabled = true;
+        document.getElementById("report-btn").disabled = false;
+      });
+
+      document.getElementById("report-btn").addEventListener("click", function() {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          this.disabled = true;
+          this.textContent = "Generating...";
+          ws.send(JSON.stringify({ type: "generate_report" }));
+        }
+      });
+
+      document.getElementById("play-en-btn").addEventListener("click", function() {
+        playAllChunks(ttsChunksEn, this);
+      });
+      document.getElementById("play-hu-btn").addEventListener("click", function() {
+        playAllChunks(ttsChunksHu, this);
       });
     })();
   </script>
