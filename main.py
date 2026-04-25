@@ -135,6 +135,65 @@ async def synthesize_edge_tts(text: str, voice: str) -> bytes | None:
         return None
 
 
+def _remove_leading_overlap(new_text: str, existing_text: str, min_words: int = 3) -> str:
+    """Remove any prefix of new_text that duplicates a tail of existing_text."""
+    if not new_text or not existing_text:
+        return new_text
+    new_words = new_text.split()
+    exist_words = existing_text.split()
+    if not new_words or not exist_words:
+        return new_text
+    max_check = min(len(new_words), len(exist_words), 20)
+    for window in range(max_check, min_words - 1, -1):
+        if exist_words[-window:] == new_words[:window]:
+            return " ".join(new_words[window:])
+    return new_text
+
+
+# A 3-second chunk at normal Arabic speech speed rarely exceeds 15 new words
+_MAX_NEW_WORDS_PER_CHUNK = 15
+
+
+def _sanitize_output(text: str) -> str:
+    """Truncate hallucinated Adhan / repetitive phrases from a single chunk.
+
+    Uses a proper sliding-window n-gram counter so interleaved patterns like
+    'Allahu Akbar Allahu Akbar Allahu Akbar' are caught reliably.
+
+    Rules (applied in order, first match wins):
+      - word cap: hard limit of 15 words per 3-second chunk
+      - n=2, max 2 occurrences: 'Allahu Akbar' is legitimately said twice in Adhan;
+        a 3rd occurrence in one chunk is hallucination → cut before it
+      - n=1, max 3 occurrences: any single word appearing 4+ times triggers cut
+    """
+    if not text:
+        return text
+
+    words = text.split()
+
+    # 1. Hard word cap
+    if len(words) > _MAX_NEW_WORDS_PER_CHUNK:
+        words = words[:_MAX_NEW_WORDS_PER_CHUNK]
+
+    # 2. Sliding-window n-gram repeat detector
+    for n, max_count in [(2, 2), (1, 3)]:
+        if len(words) < n:
+            continue
+        counts: dict = {}
+        cut_at = None
+        for i in range(len(words) - n + 1):
+            gram = tuple(words[i:i + n])
+            counts[gram] = counts.get(gram, 0) + 1
+            if counts[gram] > max_count:
+                cut_at = i
+                break
+        if cut_at is not None:
+            words = words[:cut_at]
+            break
+
+    return " ".join(words)
+
+
 def _split_text_for_tts(text: str, max_chars: int = 500) -> list[str]:
     """Split text into segments at sentence boundaries."""
     if len(text) <= max_chars:
@@ -297,23 +356,44 @@ async def send_chunk_to_openrouter(
         raise RuntimeError("Missing OPENROUTER_API_KEY environment variable")
 
     system = """
-    You are a live transcriber and translator.
-     
-    You will be given an audio stream chunk and an existing transcription and translations. Transcribe and translate the new words
-    in the audio with Arabic transcription (أ ب ت ...), English translation, AND Hungarian translation.
-     
-    YOUR JOB: append only the NEW words that have been said in the given audio.
+    You are a strict, verbatim audio-to-text transcriber and translator.
 
-    SUPER IMPORTANT: Do NOT add words that have NOT been said in the audio! And Do NOT repeat what is already in the original transcription/translations!. 
-    ONLY respond with the new additional transcription and translations that are IN THE AUDIO and NOT included in the original transcription and translations. 
-    If the the audio contains speech that is already written in the original transcription, DO NOT repeat it again in your response.
+    You will receive:
+    1. "original_transcription" — what has already been transcribed.
+    2. "original_translation" / "original_translation_hu" — already-translated English and Hungarian.
+    3. An audio chunk (WAV) that OVERLAPS with the end of the original transcription then continues.
 
-    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": "", "new_additional_translation_hu": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
+    YOUR ONLY JOB: output the NEW words spoken AFTER the original transcription ends. Nothing else.
 
-    Do NOT autocomplete! or hallucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
-    
-    DO NOT include the last second (incomplete words/sentences) of the audio (they will be sent again in the next chunk with more context).
-    And don't add new lines.
+    ══ STRICT RULES — violating any rule is a critical failure ══
+
+    RULE 1 — NO REPETITION:
+    Carefully find where the original_transcription ends inside the audio.
+    Output ONLY what comes after that point.
+    If every word in the audio is already covered by original_transcription, return empty strings.
+
+    RULE 2 — NO HALLUCINATION FROM ELONGATION:
+    Arabic recitation (Quran, Adhan, Khutbah) uses vocal elongation (مد). A long drawn-out
+    vowel sound ("Allaaaaahu") is still ONE word (الله), NOT a signal to add more words.
+    Do NOT use elongated sounds as a cue to predict or insert additional phrases.
+    Transcribe only the discrete words that are clearly and completely spoken.
+
+    RULE 3 — NO AUTOCOMPLETE:
+    Do NOT finish incomplete sentences. Do NOT predict what will be said next.
+    Do NOT use your knowledge of Adhan, Quran, or any formulaic phrases to insert text
+    that was not clearly audible in this audio chunk.
+
+    RULE 4 — SILENCE / NOISE:
+    If the audio is silent, noisy, contains only elongated breath/vocal sounds with no
+    new discrete words, or is too unclear — return EXACTLY:
+    {"new_additional_transcription": "", "new_additional_translation": "", "new_additional_translation_hu": ""}
+
+    RULE 5 — INCOMPLETE LAST WORD:
+    Do NOT include the last incomplete word/syllable at the end of the chunk.
+    It will be sent again in the next chunk.
+
+    RULE 6 — FORMAT:
+    Return ONLY a valid JSON object. No explanations, no extra text, no newlines in values.
     """
     body = {
         "model": OPENROUTER_MODEL,
@@ -425,6 +505,17 @@ async def _process_chunk(
         new_transcription = str(result.get("new_additional_transcription", ""))
         new_translation = str(result.get("new_additional_translation", ""))
         new_translation_hu = str(result.get("new_additional_translation_hu", ""))
+
+        # Post-process: strip any leading phrases already present in context
+        # (catches hallucinated repetitions caused by Adhan elongation, etc.)
+        new_transcription = _remove_leading_overlap(new_transcription, original_transcription)
+        new_translation = _remove_leading_overlap(new_translation, original_translation)
+        new_translation_hu = _remove_leading_overlap(new_translation_hu, original_translation_hu)
+
+        # Hard safety net: word cap + consecutive repetition truncation
+        new_transcription = _sanitize_output(new_transcription)
+        new_translation = _sanitize_output(new_translation)
+        new_translation_hu = _sanitize_output(new_translation_hu)
 
         # Generate TTS for both languages in parallel
         tts_en_bytes, tts_hu_bytes = await asyncio.gather(
