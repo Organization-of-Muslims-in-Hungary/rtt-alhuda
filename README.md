@@ -26,16 +26,28 @@ OPENROUTER_MODEL=google/gemini-3.1-flash-lite-preview
 python main.py
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+* **WebSocket Version:** [http://127.0.0.1:3000](http://127.0.0.1:3000)
+* **WebRTC Version:** [http://127.0.0.1:5021](http://127.0.0.1:5021)
 
 ## Architecture
 
-- The browser UI in [templates/index.html](templates/index.html) opens a WebSocket to [main.py](main.py).
-- The server keeps per-session audio state, captures microphone input, and processes a rolling chunk every few seconds with a small overlap for context.
-- Each chunk is sent to OpenRouter with the prior transcription and translation tail, then the returned text is appended back into the live UI.
+The system runs two independent server instances simultaneously:
+
+### WebSocket (Port 3000)
+
+* Uses `templates/index.html` to stream audio via a persistent WebSocket.
+* Designed for low-latency point-to-point transcription.
+
+### WebRTC & SSE (Port 5021)
+
+* Uses `templates/test_webRTC.html` for a peer-to-peer audio handshake.
+* **Auto-Detection:** Detects if the speaker is using Arabic, English, or Hungarian.
+* **Text Streaming:** Pushes translations back to the UI via Server-Sent Events (SSE).
+* **Format:** Generates a unified 3-language JSON payload for the UI.
 
 ## Files
 
-- [main.py](main.py)
-- [templates/index.html](templates/index.html)
-- [requirements.txt](requirements.txt)
+* `main.py` — Dual-port backend handling both WebSocket and WebRTC/SSE logic.
+* `templates/index.html` — Original WebSocket frontend.
+* `templates/test_webRTC.html` — New WebRTC multilingual frontend.
+* `requirements.txt`.

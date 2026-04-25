@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebRTC AI Transcriber</title>
+    <style>
+        body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; }
+        .controls { margin-bottom: 20px; display: flex; gap: 10px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; }
+        #startBtn { background: #e6ffe6; border-color: #4caf50; }
+        #stopBtn { background: #ffe6e6; border-color: #f44336; }
+        .status { color: #666; font-size: 14px; margin-bottom: 10px; }
+        
+        /* New Grid for 3 Languages */
+        .language-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px; }
+        .lang-box { background: #f5f5f5; padding: 15px; border-radius: 8px; border: 1px solid #ddd; display: flex; flex-direction: column; }
+        .lang-title { font-weight: bold; margin-bottom: 10px; color: #333; text-transform: uppercase; font-size: 12px; letter-spacing: 1px; border-bottom: 1px solid #ccc; padding-bottom: 5px;}
+        .lang-text { flex-grow: 1; font-size: 16px; line-height: 1.5; white-space: pre-wrap; min-height: 200px; }
+        
+        /* Right-to-left for Arabic */
+        #out-ar { direction: rtl; font-family: 'Amiri', 'Arial', sans-serif; font-size: 18px; }
+    </style>
+</head>
+<body>
+
+    <h2>Live AI Auto-Detect & Translate</h2>
+    <div class="status" id="status">Status: Disconnected</div>
+    
+    <div class="controls">
+        <button id="startBtn">Start Microphone</button>
+        <button id="stopBtn" disabled>Stop</button>
+    </div>
+
+    <div class="language-grid">
+        <div class="lang-box">
+            <div class="lang-title">Arabic (AR)</div>
+            <div class="lang-text" id="out-ar">...</div>
+        </div>
+        <div class="lang-box">
+            <div class="lang-title">English (EN)</div>
+            <div class="lang-text" id="out-en">...</div>
+        </div>
+        <div class="lang-box">
+            <div class="lang-title">Hungarian (HU)</div>
+            <div class="lang-text" id="out-hu">...</div>
+        </div>
+    </div>
+
+    <script>
+        const BACKEND_URL = 'http://localhost:5021';
+        
+        let pc = null;
+        let eventSource = null;
+        let localStream = null;
+
+        const startBtn = document.getElementById('startBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const status = document.getElementById('status');
+        
+        const outAr = document.getElementById('out-ar');
+        const outEn = document.getElementById('out-en');
+        const outHu = document.getElementById('out-hu');
+
+        async function start() {
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            
+            outAr.innerText = "";
+            outEn.innerText = "";
+            outHu.innerText = "";
+            status.innerText = "Status: Connecting to mic...";
+
+            try {
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                pc = new RTCPeerConnection();
+                localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                status.innerText = "Status: Negotiating with server...";
+
+                // Removed the hardcoded 'en' language bias
+                const sdpResponse = await fetch(`${BACKEND_URL}/webrtc/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type,
+                        audioLang: 'auto' 
+                    })
+                });
+
+                const answer = await sdpResponse.json();
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+
+                // Listen and route each language to its own box
+                eventSource = new EventSource(`${BACKEND_URL}/stream/text`);
+                eventSource.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.ar) { outAr.innerText += " " + data.ar; outAr.scrollTop = outAr.scrollHeight; }
+                    if (data.en) { outEn.innerText += " " + data.en; outEn.scrollTop = outEn.scrollHeight; }
+                    if (data.hu) { outHu.innerText += " " + data.hu; outHu.scrollTop = outHu.scrollHeight; }
+                };
+
+                await fetch(`${BACKEND_URL}/start`, { method: 'POST' });
+                status.innerText = "Status: Live Recording & Processing 🟢";
+
+            } catch (err) {
+                console.error(err);
+                status.innerText = "Status: Error - check console";
+                stop();
+            }
+        }
+
+        async function stop() {
+            startBtn.disabled = false;
+            stopBtn.disabled = true;
+            status.innerText = "Status: Disconnected";
+
+            try { await fetch(`${BACKEND_URL}/stop`, { method: 'POST' }); } catch(e) {}
+
+            if (pc) { pc.close(); pc = null; }
+            if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; }
+            if (eventSource) { eventSource.close(); eventSource = null; }
+        }
+
+        startBtn.onclick = start;
+        stopBtn.onclick = stop;
+    </script>
+</body>
+</html>

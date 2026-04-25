@@ -2,3 +2,11 @@ aiohttp==3.13.5
 sounddevice==0.5.5
 python-dotenv==1.1.1
 webrtcvad==2.0.10
+
+# New WebRTC & Media Support
+aiortc==1.9.0
+av==14.0.1
+aiohttp-cors==0.7.0
+
+# Compatibility Fix (Required for webrtcvad on Python 3.12+)
+setuptools<82.0.0
