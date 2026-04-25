@@ -60,15 +60,15 @@ def _pcm_16k_to_48k(pcm_16k: bytes) -> AudioFrame:
     return _normalize_48k_s16_mono(parts[0])
 
 
-def _wav_bytes_to_48k_frames(wav_bytes: bytes) -> list[AudioFrame]:
-    """Decode WAV/PCM container bytes into fixed-size 48 kHz mono s16 frames."""
+def _audio_bytes_to_48k_frames(audio_bytes: bytes) -> list[AudioFrame]:
+    """Decode audio bytes (MP3, WAV, PCM container) into fixed-size 48 kHz mono s16 frames."""
 
     out_frames: list[AudioFrame] = []
-    if not wav_bytes:
+    if not audio_bytes:
         return out_frames
     container = None
     try:
-        container = av.open(BytesIO(wav_bytes), mode="r")
+        container = av.open(BytesIO(audio_bytes), mode="r")
         audio_streams = [s for s in container.streams if s.type == "audio"]
         if not audio_streams:
             return out_frames
@@ -137,14 +137,14 @@ class MicPcmTrack(AudioStreamTrack):
         return frame
 
 
-class TtsWavTrack(AudioStreamTrack):
-    """Plays TTS responses (WAV octets from OpenRouter) as a timed 48 kHz stream."""
+class TtsAudioTrack(AudioStreamTrack):
+    """Plays TTS responses (MP3/PCM from OpenRouter) as a timed 48 kHz stream."""
 
     kind = "audio"
 
-    def __init__(self, wav_queue: asyncio.Queue[bytes]) -> None:
+    def __init__(self, audio_queue: asyncio.Queue[bytes]) -> None:
         super().__init__()
-        self._wav_queue = wav_queue
+        self._audio_queue = audio_queue
         self._pending: deque[AudioFrame] = deque()
         self._timestamp = 0
         self._start: float | None = None
@@ -166,10 +166,10 @@ class TtsWavTrack(AudioStreamTrack):
 
         while not self._pending:
             try:
-                wav_blob = await asyncio.wait_for(self._wav_queue.get(), timeout=0.05)
+                audio_blob = await asyncio.wait_for(self._audio_queue.get(), timeout=0.05)
             except asyncio.TimeoutError:
                 break
-            for fr in _wav_bytes_to_48k_frames(wav_blob):
+            for fr in _audio_bytes_to_48k_frames(audio_blob):
                 self._pending.append(fr)
 
         if self._pending:

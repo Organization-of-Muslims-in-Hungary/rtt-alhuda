@@ -8,7 +8,7 @@ from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSession
 
 from rtt_alhuda.config import WEBRTC_STUN_URLS
 from rtt_alhuda.models import ClientState
-from rtt_alhuda.webrtc_tracks import MicPcmTrack, TtsWavTrack
+from rtt_alhuda.webrtc_tracks import MicPcmTrack, TtsAudioTrack
 
 
 def _build_rtc_configuration() -> RTCConfiguration:
@@ -80,7 +80,7 @@ async def webrtc_input_offer(request: web.Request) -> web.StreamResponse:
 
 
 async def webrtc_tts_offer(request: web.Request) -> web.StreamResponse:
-    """SDP offer/answer for one outbound track: TTS (WAV blobs from OpenRouter)."""
+    """SDP offer/answer for one outbound track: TTS audio from OpenRouter."""
 
     client = _active_client(request.app)
     if client is None or client.media_tts_queue is None:
@@ -91,7 +91,7 @@ async def webrtc_tts_offer(request: web.Request) -> web.StreamResponse:
 
     return await _webrtc_offer(
         request,
-        track_factory=lambda: TtsWavTrack(client.media_tts_queue),
+        track_factory=lambda: TtsAudioTrack(client.media_tts_queue),
         app_key="webrtc_tts_pc",
     )
 
