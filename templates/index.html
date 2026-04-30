@@ -103,6 +103,31 @@
         color: var(--btn-stop-text);
       }
 
+      select {
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 14px;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 30px;
+      }
+
+      select:hover {
+        border-color: var(--hover-border);
+      }
+
+      select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
       .btn-audio-active {
         border-color: var(--accent);
         background: #0c4a6e;
@@ -349,6 +374,10 @@
       <div class="controls">
         <button class="btn-start" id="start-btn">Start Recording</button>
         <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
+        <select id="tts-lang-select">
+          <option value="en">English</option>
+          <option value="hu">Hungarian</option>
+        </select>
         <button id="mic-audio-btn" disabled>Hear Mic</button>
         <button id="tts-audio-btn" disabled>Hear TTS</button>
       </div>
@@ -607,6 +636,7 @@
         statusText.textContent = isRecording ? "Recording" : "Connected";
         startBtn.disabled = isRecording;
         stopBtn.disabled = !isRecording;
+        document.getElementById("tts-lang-select").disabled = isRecording;
         document.getElementById("mic-audio-btn").disabled = !isRecording;
         document.getElementById("tts-audio-btn").disabled = !isRecording;
       }
@@ -732,7 +762,8 @@
           resetSessionState();
           requestedRecording = true;
           const socket = await ensureSocket();
-          socket.send(JSON.stringify({ type: "start" }));
+          const ttsLang = document.getElementById("tts-lang-select").value;
+          socket.send(JSON.stringify({ type: "start", ttsLanguage: ttsLang }));
           updateUiForRecording(true);
         } catch (err) {
           log("start error: " + (err?.message || err));

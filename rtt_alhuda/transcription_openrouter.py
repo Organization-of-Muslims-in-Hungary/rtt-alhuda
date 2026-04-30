@@ -14,6 +14,7 @@ async def send_chunk_to_openrouter(
     audio_b64_wav: str,
     original_transcription: str,
     original_translation: str,
+    translation_language: str = "English",
 ) -> dict:
     """Send one audio window to OpenRouter and return the parsed JSON result."""
 
@@ -31,11 +32,11 @@ async def send_chunk_to_openrouter(
         len(audio_b64_wav),
     )
 
-    system = """
+    system = f"""
     You are a live transcriber and translator.
      
     You will be given an audio stream chunk and an existing transcription and translation. Transcribe and translate the new words
-    in the audio with Arabic transcription (أ ب ت ...), and English translation.
+    in the audio with Arabic transcription (أ ب ت ...), and {translation_language} translation.
      
     YOUR JOB: append only the NEW words that have been said in the given audio.
 
@@ -43,7 +44,7 @@ async def send_chunk_to_openrouter(
     ONLY respond with the new additional transcription and translation that is IN THE AUDIO and NOT included in the original transcription and translation. 
     If the the audio contains speech that is already written in the original transcription, DO NOT repeat it again in your response.
 
-    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {"new_additional_transcription": "", "new_additional_translation": ""}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
+    SUPER IMPORTANT: You must be careful if the audio is silent, or unclear, or noisy (contains no speech) or just background noise, then you MUST return empty strings (exactly {{"new_additional_transcription": "", "new_additional_translation": ""}}) and nothing else! even if original sentence is not completed! (mind you that most of the times it will be empty audio!)
 
     Do NOT autocomplete! or hallucinate your own words or interpret unclear words! Only append what is actually spoken in the audio! 
     

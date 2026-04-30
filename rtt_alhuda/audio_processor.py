@@ -51,11 +51,13 @@ async def _process_chunk(
 ):
     try:
         start_time = time.time()
+        lang_name = "Hungarian" if client.media_tts_language == "hu" else "English"
         result = await send_chunk_to_openrouter(
             http,
             wav_b64,
             original_transcription,
             original_translation,
+            translation_language=lang_name,
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
