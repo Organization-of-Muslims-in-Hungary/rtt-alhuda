@@ -103,6 +103,37 @@
         color: var(--btn-stop-text);
       }
 
+      select {
+        border: 1px solid var(--line);
+        background: var(--bg);
+        color: var(--text);
+        border-radius: 10px;
+        padding: 10px 14px;
+        font-size: 14px;
+        cursor: pointer;
+        appearance: none;
+        -webkit-appearance: none;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%239ca3af' d='M2 4l4 4 4-4'/%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 10px center;
+        padding-right: 30px;
+      }
+
+      select:hover {
+        border-color: var(--hover-border);
+      }
+
+      select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .btn-audio-active {
+        border-color: var(--accent);
+        background: #0c4a6e;
+        color: #e0f2fe;
+      }
+
       .panes {
         display: grid;
         grid-template-columns: 1.5fr 1fr;
@@ -343,6 +374,12 @@
       <div class="controls">
         <button class="btn-start" id="start-btn">Start Recording</button>
         <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
+        <select id="tts-lang-select">
+          <option value="en">English</option>
+          <option value="hu">Hungarian</option>
+        </select>
+        <button id="mic-audio-btn" disabled>Hear Mic</button>
+        <button id="tts-audio-btn" disabled>Hear TTS</button>
       </div>
 
       <div class="panes">
@@ -385,6 +422,79 @@
 
       let ws = null;
       let requestedRecording = false;
+      let audioCtx = null;
+      let micGain = null;
+      let ttsGain = null;
+      let micNextTime = 0;
+      let ttsNextTime = 0;
+      let micSubscribed = false;
+      let ttsSubscribed = false;
+
+      function ensureAudioContext() {
+        if (audioCtx) {
+          if (audioCtx.state === "suspended") audioCtx.resume();
+          return;
+        }
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+          sampleRate: 16000,
+        });
+        micGain = audioCtx.createGain();
+        micGain.connect(audioCtx.destination);
+        ttsGain = audioCtx.createGain();
+        ttsGain.connect(audioCtx.destination);
+      }
+
+      function handleMicAudio(pcmBytes) {
+        if (!audioCtx || !micGain) return;
+        const samples = pcmBytes.length / 2;
+        if (samples === 0) return;
+        const buffer = audioCtx.createBuffer(1, samples, 16000);
+        const channel = buffer.getChannelData(0);
+        const view = new DataView(pcmBytes.buffer, pcmBytes.byteOffset, pcmBytes.byteLength);
+        for (let i = 0; i < samples; i++) {
+          channel[i] = view.getInt16(i * 2, true) / 32768;
+        }
+        const source = audioCtx.createBufferSource();
+        source.buffer = buffer;
+        source.connect(micGain);
+        const now = audioCtx.currentTime;
+        if (micNextTime < now) micNextTime = now;
+        source.start(micNextTime);
+        micNextTime += buffer.duration;
+      }
+
+      function handleTtsAudio(mp3Bytes) {
+        if (!audioCtx || !ttsGain) return;
+        audioCtx.decodeAudioData(mp3Bytes.buffer.slice(
+          mp3Bytes.byteOffset,
+          mp3Bytes.byteOffset + mp3Bytes.byteLength
+        )).then((buffer) => {
+          const source = audioCtx.createBufferSource();
+          source.buffer = buffer;
+          source.connect(ttsGain);
+          const now = audioCtx.currentTime;
+          if (ttsNextTime < now) ttsNextTime = now;
+          source.start(ttsNextTime);
+          ttsNextTime += buffer.duration;
+        }).catch((err) => {
+          log("TTS decode error: " + err.message);
+        });
+      }
+
+      function resetAudioState() {
+        micNextTime = 0;
+        ttsNextTime = 0;
+        micSubscribed = false;
+        ttsSubscribed = false;
+        const micBtn = document.getElementById("mic-audio-btn");
+        const ttsBtn = document.getElementById("tts-audio-btn");
+        micBtn.classList.remove("btn-audio-active");
+        ttsBtn.classList.remove("btn-audio-active");
+        micBtn.textContent = "Hear Mic";
+        ttsBtn.textContent = "Hear TTS";
+        micBtn.disabled = true;
+        ttsBtn.disabled = true;
+      }
 
       function log(msg) {
         console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -526,6 +636,9 @@
         statusText.textContent = isRecording ? "Recording" : "Connected";
         startBtn.disabled = isRecording;
         stopBtn.disabled = !isRecording;
+        document.getElementById("tts-lang-select").disabled = isRecording;
+        document.getElementById("mic-audio-btn").disabled = !isRecording;
+        document.getElementById("tts-audio-btn").disabled = !isRecording;
       }
 
       function resetSessionState() {
@@ -534,6 +647,7 @@
         translationCommitted.textContent = "";
         networkList.replaceChildren();
         serverLog.replaceChildren();
+        resetAudioState();
       }
 
       function ensureSocket() {
@@ -563,6 +677,7 @@
         const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
         const wsUrl = `${wsProtocol}//${window.location.host}/stream`;
         ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
 
         ws.onopen = () => {
           log("WebSocket connected");
@@ -570,6 +685,15 @@
         };
 
         ws.onmessage = (event) => {
+          if (event.data instanceof ArrayBuffer) {
+            const view = new Uint8Array(event.data);
+            if (view.length < 2) return;
+            const streamType = view[0];
+            const payload = view.slice(1);
+            if (streamType === 0x01) handleMicAudio(payload);
+            else if (streamType === 0x02) handleTtsAudio(payload);
+            return;
+          }
           try {
             const msg = JSON.parse(event.data);
             if (msg?.type === "transcription") {
@@ -638,7 +762,8 @@
           resetSessionState();
           requestedRecording = true;
           const socket = await ensureSocket();
-          socket.send(JSON.stringify({ type: "start" }));
+          const ttsLang = document.getElementById("tts-lang-select").value;
+          socket.send(JSON.stringify({ type: "start", ttsLanguage: ttsLang }));
           updateUiForRecording(true);
         } catch (err) {
           log("start error: " + (err?.message || err));
@@ -654,6 +779,41 @@
         statusText.textContent = ws ? "Connected" : "Stopped";
         startBtn.disabled = false;
         stopBtn.disabled = true;
+        resetAudioState();
+      });
+
+      document.getElementById("mic-audio-btn").addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ensureAudioContext();
+        micSubscribed = !micSubscribed;
+        const btn = document.getElementById("mic-audio-btn");
+        if (micSubscribed) {
+          ws.send(JSON.stringify({ type: "subscribe", stream: "mic" }));
+          btn.classList.add("btn-audio-active");
+          btn.textContent = "Mute Mic";
+        } else {
+          ws.send(JSON.stringify({ type: "unsubscribe", stream: "mic" }));
+          btn.classList.remove("btn-audio-active");
+          btn.textContent = "Hear Mic";
+          micNextTime = 0;
+        }
+      });
+
+      document.getElementById("tts-audio-btn").addEventListener("click", () => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        ensureAudioContext();
+        ttsSubscribed = !ttsSubscribed;
+        const btn = document.getElementById("tts-audio-btn");
+        if (ttsSubscribed) {
+          ws.send(JSON.stringify({ type: "subscribe", stream: "tts" }));
+          btn.classList.add("btn-audio-active");
+          btn.textContent = "Mute TTS";
+        } else {
+          ws.send(JSON.stringify({ type: "unsubscribe", stream: "tts" }));
+          btn.classList.remove("btn-audio-active");
+          btn.textContent = "Hear TTS";
+          ttsNextTime = 0;
+        }
       });
     })();
   </script>
