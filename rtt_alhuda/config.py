@@ -32,9 +32,6 @@ OPENROUTER_TTS_MODEL = os.getenv(
 OPENROUTER_TTS_VOICE_EN = os.getenv("OPENROUTER_TTS_VOICE_EN", "alloy")
 OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "alloy")
 OPENROUTER_TTS_RESPONSE_FORMAT = os.getenv("OPENROUTER_TTS_RESPONSE_FORMAT", "mp3")
-WEBRTC_STUN_URLS = os.getenv(
-    "WEBRTC_STUN_URLS", "stun:stun.l.google.com:19302"
-)
 
 
 def voice_for_tts_language(language: str) -> str:

@@ -24,7 +24,7 @@ from rtt_alhuda.web_protocol import send_log, send_transcription
 
 
 async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> None:
-    """Fetch TTS audio and push one WAV blob onto the WebRTC TTS queue."""
+    """Fetch TTS audio and push one blob onto the TTS audio queue."""
 
     q = client.media_tts_queue
     if q is None:
@@ -179,7 +179,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
                 continue
 
-            # --- WebRTC VAD check on exclusively new audio
+            # --- VAD check on exclusively new audio
             if not is_speech_present(new_audio_pcm):
                 await send_log(client, "Silent audio chunk detected by VAD, skipping LLM request.")
                 async with client.lock:

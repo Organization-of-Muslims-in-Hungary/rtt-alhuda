@@ -1,4 +1,4 @@
-"""WebRTC voice activity detection helpers."""
+"""Voice activity detection helpers."""
 
 import webrtcvad
 
@@ -8,9 +8,9 @@ vad = webrtcvad.Vad(2)  # aggressiveness 0-3 (2 is aggressive)
 
 
 def is_speech_present(pcm_data: bytes) -> bool:
-    """Check if a PCM audio chunk contains speech using WebRTC VAD."""
+    """Check if a PCM audio chunk contains speech using VAD."""
     try:
-        # WebRTC VAD requires exact frame durations: 10, 20, or 30 ms.
+        # VAD requires exact frame durations: 10, 20, or 30 ms.
         frame_duration_ms = 30
         frame_bytes = int(
             (SAMPLE_RATE * frame_duration_ms / 1000.0) * CHANNELS * SAMPLE_WIDTH_BYTES
