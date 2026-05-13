@@ -32,9 +32,9 @@ from typing import Optional
 if os.name == "nt" and sys.version_info >= (3, 14):
     platform.system = lambda: "Windows"
 
-import edge_tts
 from aiohttp import ClientError, ClientSession, ClientTimeout, WSMsgType, web
 import aiohttp_cors
+import edge_tts
 from dotenv import load_dotenv
 from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 from aiortc.contrib.media import MediaPlayer
@@ -104,35 +104,77 @@ def is_speech_present(pcm_data: bytes) -> bool:
 
 
 # =========================================================================
-# TTS Configuration
+# TTS Configuration — OpenRouter TTS with edge-tts fallback
+# Voices: alloy, echo, fable, onyx, nova, shimmer
 # =========================================================================
-EDGE_TTS_EN_VOICE = "en-US-AndrewMultilingualNeural"  # Natural US male voice
-EDGE_TTS_HU_VOICE = "hu-HU-TamasNeural"  # Hungarian male neural voice
+OPENROUTER_TTS_URL = "https://openrouter.ai/api/v1/tts"
+OPENROUTER_TTS_MODEL = os.getenv("OPENROUTER_TTS_MODEL", "openai/tts-1")
+OPENROUTER_TTS_VOICE_EN = os.getenv("OPENROUTER_TTS_VOICE_EN", "onyx")
+OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "onyx")
+# edge-tts fallback voices (used when OpenRouter TTS fails)
+EDGE_TTS_EN_VOICE = "en-GB-RyanNeural"
+EDGE_TTS_HU_VOICE = "hu-HU-TamasNeural"
 
 
-async def synthesize_edge_tts(text: str, voice: str) -> bytes | None:
-    """Generate MP3 audio using Microsoft Edge neural TTS.
-    
-    Splits long text into ~500 char segments at sentence boundaries
-    to avoid crashes with very long text.
+async def _synthesize_edge_tts_fallback(text: str, voice: str) -> bytes | None:
+    """Fallback TTS using edge-tts when OpenRouter TTS is unavailable."""
+    try:
+        communicate = edge_tts.Communicate(text, voice)
+        chunks: list[bytes] = []
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                chunks.append(chunk["data"])
+        return b"".join(chunks) if chunks else None
+    except Exception as e:
+        log(f"edge-tts fallback error ({voice}): {e}")
+        return None
+
+
+async def synthesize_openrouter_tts(text: str, voice: str, http: ClientSession) -> bytes | None:
+    """Generate MP3 audio via OpenRouter TTS, with edge-tts fallback.
+
+    Tries OpenRouter first (openai/tts-1). If it fails for any reason,
+    automatically falls back to edge-tts so audio always works.
     """
     if not text or not text.strip():
         return None
-    try:
-        # Split long text into segments at sentence boundaries
-        segments = _split_text_for_tts(text, max_chars=500)
-        all_audio = []
-        for seg in segments:
-            communicate = edge_tts.Communicate(seg, voice)
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    all_audio.append(chunk["data"])
-        if all_audio:
-            return b"".join(all_audio)
-        return None
-    except Exception as e:
-        log(f"Edge TTS ({voice}) error: {e}")
-        return None
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if api_key:
+        payload = {
+            "input": text,
+            "model": OPENROUTER_TTS_MODEL,
+            "voice": voice,
+            "response_format": "mp3",
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:3000",
+            "X-Title": "rtt-alhuda",
+        }
+        try:
+            async with http.post(
+                OPENROUTER_TTS_URL,
+                json=payload,
+                headers=headers,
+                timeout=ClientTimeout(total=60),
+            ) as resp:
+                body = await resp.read()
+                if resp.status == 200:
+                    return body
+                log(f"OpenRouter TTS error {resp.status}: {body[:200]!r} — falling back to edge-tts")
+        except Exception as e:
+            log(f"OpenRouter TTS failed ({e}) — falling back to edge-tts")
+
+    # Fallback: edge-tts (always works, no key needed)
+    edge_voice = EDGE_TTS_EN_VOICE if "alloy" in voice or "onyx" in voice or "echo" in voice else EDGE_TTS_HU_VOICE
+    # Map based on context: if voice matches EN config use EN voice else HU
+    if voice == OPENROUTER_TTS_VOICE_EN:
+        edge_voice = EDGE_TTS_EN_VOICE
+    elif voice == OPENROUTER_TTS_VOICE_HU:
+        edge_voice = EDGE_TTS_HU_VOICE
+    return await _synthesize_edge_tts_fallback(text, edge_voice)
 
 
 def _remove_leading_overlap(new_text: str, existing_text: str, min_words: int = 3) -> str:
@@ -151,17 +193,18 @@ def _remove_leading_overlap(new_text: str, existing_text: str, min_words: int = 
 
 
 # A 3-second chunk at normal Arabic speech speed rarely exceeds 15 new words
-_MAX_NEW_WORDS_PER_CHUNK = 15
+_MAX_NEW_WORDS_PER_CHUNK = 15       # Arabic audio chunks (hallucination prone)
+_MAX_TRANSLATION_WORDS = 60         # Translations — far more words per chunk; only repetition-guard needed
 
 
-def _sanitize_output(text: str) -> str:
-    """Truncate hallucinated Adhan / repetitive phrases from a single chunk.
+def _sanitize_output(text: str, word_cap: int = _MAX_NEW_WORDS_PER_CHUNK) -> str:
+    """Truncate hallucinated / repetitive phrases from a single chunk.
 
     Uses a proper sliding-window n-gram counter so interleaved patterns like
     'Allahu Akbar Allahu Akbar Allahu Akbar' are caught reliably.
 
     Rules (applied in order, first match wins):
-      - word cap: hard limit of 15 words per 3-second chunk
+      - word_cap: hard limit per chunk (15 for Arabic, 60 for translations)
       - n=2, max 2 occurrences: 'Allahu Akbar' is legitimately said twice in Adhan;
         a 3rd occurrence in one chunk is hallucination → cut before it
       - n=1, max 3 occurrences: any single word appearing 4+ times triggers cut
@@ -172,8 +215,8 @@ def _sanitize_output(text: str) -> str:
     words = text.split()
 
     # 1. Hard word cap
-    if len(words) > _MAX_NEW_WORDS_PER_CHUNK:
-        words = words[:_MAX_NEW_WORDS_PER_CHUNK]
+    if len(words) > word_cap:
+        words = words[:word_cap]
 
     # 2. Sliding-window n-gram repeat detector
     for n, max_count in [(2, 2), (1, 3)]:
@@ -224,13 +267,40 @@ class ChunkInfo:
     translation_hu: str = ""
 
 
-# Global set of SSE queues — one per connected React frontend client
-_sse_listeners: set[asyncio.Queue] = set()
+# Global set of SSE queues — one per connected frontend client
+_sse_listeners: set[asyncio.Queue] = set()       # text stream
+_audio_listeners: set[asyncio.Queue] = set()     # audio stream (TV page)
 _active_pcs: set = set()  # Track open RTCPeerConnections
+
+# Global recording state — allows the /control API to track status
+_recording_state: dict = {"active": False, "started_at": None}
+_ws_clients: list = []  # All active WebSocket ClientState instances
+_all_ws_browsers: list = []  # Every connected browser WebSocket (recording or idle)
+_active_recording_client: "ClientState | None" = None  # The client currently recording
+
+
+class _NullWebSocket:
+    """Drop-in replacement for web.WebSocketResponse when there is no browser.
+
+    Used by the headless ClientState so the control API can start/stop
+    recording without requiring an operator browser tab to be open.
+    """
+    closed = True  # send_log skips sending when ws.closed is True
+
+    async def send_str(self, _data: str) -> None:  # noqa: D401
+        pass
+
+    async def close(self) -> None:
+        pass
+
+
+# Persistent headless client — used by the /api/control/* REST API.
+# Exists for the lifetime of the server; no browser tab needed.
+_headless_client: "ClientState | None" = None  # set in on_startup
 
 
 async def _broadcast_translations(ar: str, en: str, hu: str) -> None:
-    """Push latest translations to all SSE listeners."""
+    """Push latest translations to all SSE text listeners."""
     payload = json.dumps({"ar": ar, "en": en, "hu": hu})
     dead = set()
     for q in _sse_listeners:
@@ -239,6 +309,18 @@ async def _broadcast_translations(ar: str, en: str, hu: str) -> None:
         except asyncio.QueueFull:
             dead.add(q)
     _sse_listeners.difference_update(dead)
+
+
+async def _broadcast_audio(lang: str, mp3_b64: str) -> None:
+    """Push a TTS audio chunk to all SSE audio listeners (TV page)."""
+    payload = json.dumps({"lang": lang, "audio": mp3_b64})
+    dead = set()
+    for q in _audio_listeners:
+        try:
+            q.put_nowait(payload)
+        except asyncio.QueueFull:
+            dead.add(q)
+    _audio_listeners.difference_update(dead)
 
 
 @dataclass
@@ -266,7 +348,7 @@ def get_hours_timestamp() -> str:
 def log(*parts: object) -> None:
     """Print a timestamped log line to stdout."""
 
-    print(f"[{get_hours_timestamp()}]", *parts)
+    print(f"[{get_hours_timestamp()}]", *parts, flush=True)
 
 
 async def send_log(client: ClientState, message: str, level: str = "info") -> None:
@@ -315,7 +397,7 @@ async def capture_microphone_loop(client: ClientState) -> None:
             blocksize=frame_chunk,
         ) as stream:
             await send_log(client, "Microphone capture started")
-            while client.recording and not client.ws.closed:
+            while client.recording:  # use only client.recording — not ws.closed (headless client has ws.closed=True)
                 data, overflowed = await asyncio.to_thread(stream.read, frame_chunk)
                 if overflowed:
                     await send_log(client, "Input overflow detected", "warn")
@@ -392,7 +474,13 @@ async def send_chunk_to_openrouter(
     Do NOT include the last incomplete word/syllable at the end of the chunk.
     It will be sent again in the next chunk.
 
-    RULE 6 — FORMAT:
+    RULE 6 — SCRIPT:
+    "new_additional_transcription" MUST be written in Arabic script (Unicode Arabic letters: ا ب ت ...).
+    NEVER romanize, transliterate, or write Arabic words using Latin letters.
+    Example of WRONG output: "Bismillahirrahmanirrahim"
+    Example of CORRECT output: "بسم الله الرحمن الرحيم"
+
+    RULE 7 — FORMAT:
     Return ONLY a valid JSON object. No explanations, no extra text, no newlines in values.
     """
     body = {
@@ -459,7 +547,7 @@ async def send_chunk_to_openrouter(
         OPENROUTER_API_URL,
         json=body,
         headers=headers,
-        timeout=ClientTimeout(total=120),
+        timeout=ClientTimeout(total=30),
     ) as resp:
         raw_text = await resp.text()
         if resp.status < 200 or resp.status >= 300:
@@ -513,14 +601,17 @@ async def _process_chunk(
         new_translation_hu = _remove_leading_overlap(new_translation_hu, original_translation_hu)
 
         # Hard safety net: word cap + consecutive repetition truncation
-        new_transcription = _sanitize_output(new_transcription)
-        new_translation = _sanitize_output(new_translation)
-        new_translation_hu = _sanitize_output(new_translation_hu)
+        # Arabic keeps a tight cap (15 words) to suppress audio hallucinations.
+        # Translations use a generous cap (60 words) — Arabic is far more concise
+        # than English/Hungarian, so 15 Arabic words can easily become 30+ in translation.
+        new_transcription = _sanitize_output(new_transcription, word_cap=_MAX_NEW_WORDS_PER_CHUNK)
+        new_translation = _sanitize_output(new_translation, word_cap=_MAX_TRANSLATION_WORDS)
+        new_translation_hu = _sanitize_output(new_translation_hu, word_cap=_MAX_TRANSLATION_WORDS)
 
         # Generate TTS for both languages in parallel
         tts_en_bytes, tts_hu_bytes = await asyncio.gather(
-            synthesize_edge_tts(new_translation, EDGE_TTS_EN_VOICE) if new_translation.strip() else asyncio.sleep(0, result=None),
-            synthesize_edge_tts(new_translation_hu, EDGE_TTS_HU_VOICE) if new_translation_hu.strip() else asyncio.sleep(0, result=None),
+            synthesize_openrouter_tts(new_translation, OPENROUTER_TTS_VOICE_EN, http) if new_translation.strip() else asyncio.sleep(0, result=None),
+            synthesize_openrouter_tts(new_translation_hu, OPENROUTER_TTS_VOICE_HU, http) if new_translation_hu.strip() else asyncio.sleep(0, result=None),
         )
 
         async with client.lock:
@@ -565,20 +656,17 @@ async def _process_chunk(
 
         if not client.ws.closed:
             await client.ws.send_str(json.dumps(message))
+        else:
+            # Headless client — broadcast to all open browser tabs
+            for c in _all_ws_browsers:
+                if not c.ws.closed:
+                    await c.ws.send_str(json.dumps(message))
 
-        # Push TTS audio to any connected WebRTC audio streams (React frontend)
+        # Broadcast audio to TV page SSE listeners
         if tts_en_bytes:
-            for q in list(client.ws._req.app.get("webrtc_tts_en", set())):
-                try:
-                    q.put_nowait(tts_en_bytes)
-                except asyncio.QueueFull:
-                    pass
+            await _broadcast_audio("en", base64.b64encode(tts_en_bytes).decode("ascii"))
         if tts_hu_bytes:
-            for q in list(client.ws._req.app.get("webrtc_tts_hu", set())):
-                try:
-                    q.put_nowait(tts_hu_bytes)
-                except asyncio.QueueFull:
-                    pass
+            await _broadcast_audio("hu", base64.b64encode(tts_hu_bytes).decode("ascii"))
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
         await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
@@ -601,7 +689,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
     try:
         next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
 
-        while client.recording and not client.ws.closed:
+        while client.recording:  # use only client.recording — not ws.closed (headless client has ws.closed=True)
             wait_seconds = next_cycle_at - time.monotonic()
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
@@ -698,6 +786,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
 
 async def stop_recording(client: ClientState) -> None:
     """Stop the active recording and cancel background tasks for the client."""
+    global _active_recording_client
 
     client.recording = False
 
@@ -709,10 +798,16 @@ async def stop_recording(client: ClientState) -> None:
 
     client.recorder_task = None
     client.processor_task = None
+    _recording_state["active"] = False
+    _recording_state["started_at"] = None
+    _active_recording_client = None
+    if client in _ws_clients:
+        _ws_clients.remove(client)
 
 
 async def start_recording(client: ClientState, http: ClientSession) -> None:
     """Reset client state and start microphone capture plus audio processing."""
+    global _active_recording_client
 
     if client.recording:
         await send_log(client, "Recording already running", "warn")
@@ -728,9 +823,13 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
     client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
     client.processor_task = asyncio.create_task(process_audio_loop(client, http))
     await send_log(client, "Recording started")
+    _recording_state["active"] = True
+    _recording_state["started_at"] = time.time()
+    _active_recording_client = client
+    _ws_clients.append(client)
 
 
-async def generate_final_report(client: ClientState) -> None:
+async def generate_final_report(client: ClientState, http: ClientSession) -> None:
     """Generate final khutbah report: text files + full TTS audio files."""
     await send_log(client, "Generating final report...")
 
@@ -779,17 +878,21 @@ async def generate_final_report(client: ClientState) -> None:
     }
     if not client.ws.closed:
         await client.ws.send_str(json.dumps(text_msg))
+    else:
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(json.dumps(text_msg))
 
     # Generate full TTS audio files (may take time for long text)
     try:
         await send_log(client, "Generating audio files (this may take a minute)...")
         for lang_text, voice, suffix in [
-            (full_english, EDGE_TTS_EN_VOICE, "english"),
-            (full_hungarian, EDGE_TTS_HU_VOICE, "hungarian"),
+            (full_english, OPENROUTER_TTS_VOICE_EN, "english"),
+            (full_hungarian, OPENROUTER_TTS_VOICE_HU, "hungarian"),
         ]:
             if not lang_text:
                 continue
-            audio_data = await synthesize_edge_tts(lang_text, voice)
+            audio_data = await synthesize_openrouter_tts(lang_text, voice, http)
             if audio_data:
                 audio_path = reports_dir / f"{prefix}_{suffix}.mp3"
                 audio_path.write_bytes(audio_data)
@@ -807,6 +910,10 @@ async def generate_final_report(client: ClientState) -> None:
     }
     if not client.ws.closed:
         await client.ws.send_str(json.dumps(report_msg))
+    else:
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(json.dumps(report_msg))
 
     await send_log(client, f"Report complete! {len(files_created)} files generated.")
 
@@ -819,6 +926,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     http: ClientSession = request.app["http_client"]
     client = ClientState(ws=ws)
+    _all_ws_browsers.append(client)
 
     await send_log(client, "WebSocket connected")
     log("WebSocket client connected")
@@ -839,13 +947,21 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     await stop_recording(client)
                     await send_log(client, "Recording stopped")
                 elif msg_type == "generate_report":
-                    await generate_final_report(client)
+                    await generate_final_report(client, http)
                 else:
                     await send_log(client, f"Unknown message type: {msg_type}", "warn")
             elif msg.type == WSMsgType.ERROR:
                 await send_log(client, f"WebSocket error: {ws.exception()}", "error")
     finally:
-        await stop_recording(client)
+        # Only stop recording if this client is currently the active one.
+        # If the phone started recording via a different client, don't cancel it.
+        if client is _active_recording_client:
+            await stop_recording(client)
+        elif client.recording:
+            # This client was recording independently — clean it up
+            await stop_recording(client)
+        if client in _all_ws_browsers:
+            _all_ws_browsers.remove(client)
         log("WebSocket client disconnected")
 
     return ws
@@ -904,6 +1020,208 @@ async def sse_text_handler(request: web.Request) -> web.StreamResponse:
         _sse_listeners.discard(queue)
         log(f"SSE client disconnected (total: {len(_sse_listeners)})")
     return response
+
+
+async def sse_audio_handler(request: web.Request) -> web.StreamResponse:
+    """SSE endpoint that pushes TTS audio chunks to the TV display page."""
+    response = web.StreamResponse()
+    response.headers["Content-Type"] = "text/event-stream"
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    await response.prepare(request)
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    _audio_listeners.add(queue)
+    log(f"Audio SSE client connected (total: {len(_audio_listeners)})")
+    try:
+        while True:
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=25)
+                await response.write(f"data: {payload}\n\n".encode())
+            except asyncio.TimeoutError:
+                await response.write(b": keepalive\n\n")
+    except (ConnectionResetError, Exception):
+        pass
+    finally:
+        _audio_listeners.discard(queue)
+        log(f"Audio SSE client disconnected (total: {len(_audio_listeners)})")
+    return response
+
+
+async def tv_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the TV/display page from templates/tv.html."""
+    tv_path = Path(__file__).parent / "templates" / "tv.html"
+    if not tv_path.is_file():
+        return web.Response(status=404, text="tv.html not found")
+    return web.FileResponse(tv_path)
+
+
+async def control_handler(request: web.Request) -> web.Response:
+    """Phone-friendly REST API for remote start/stop/status."""
+    action = request.match_info.get("action", "status")
+
+    if action == "status":
+        elapsed = None
+        if _recording_state["started_at"]:
+            elapsed = int(time.time() - _recording_state["started_at"])
+        return web.json_response({
+            "recording": _recording_state["active"],
+            "elapsed_seconds": elapsed,
+            "listeners": len(_sse_listeners),
+        })
+
+    if action == "start":
+        log(f"[control] start: active={_recording_state['active']}, headless={_headless_client is not None}")
+        if _recording_state["active"]:
+            return web.json_response({"ok": False, "reason": "already_recording"})
+        if _headless_client is None:
+            return web.json_response({"ok": False, "reason": "server_not_ready"})
+        http = request.app["http_client"]
+        await start_recording(_headless_client, http)
+        # Notify all open browser tabs that recording started
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(json.dumps({"type": "log", "level": "info", "message": "\u25b6 Recording started via phone control"}))
+        return web.json_response({"ok": True, "action": "started"})
+
+    if action == "stop":
+        log(f"[control] stop: active={_recording_state['active']}, active_client={_active_recording_client is not None}")
+        if not _recording_state["active"]:
+            return web.json_response({"ok": False, "reason": "not_recording"})
+        if _headless_client is None:
+            return web.json_response({"ok": False, "reason": "server_not_ready"})
+        await stop_recording(_headless_client)
+        log("[control] stop: done")
+        # Notify all open browser tabs that recording stopped
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(json.dumps({"type": "log", "level": "info", "message": "\u25a0 Recording stopped via phone control"}))
+        return web.json_response({"ok": True, "action": "stopped"})
+
+    return web.json_response({"ok": False, "reason": "unknown_action"}, status=400)
+
+
+_XENV = {"DISPLAY": ":0", "XAUTHORITY": "/home/pi/.Xauthority"}
+
+_BROWSER_PAGES = {
+    "app":      "http://localhost/app",
+    "tv":       "http://localhost/tv",
+    "operator": "http://localhost/",
+    "control":  "http://localhost/control",
+}
+
+
+async def _run(cmd: str) -> tuple[int, str]:
+    """Run a shell command async, return (returncode, combined output)."""
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **_XENV},
+    )
+    out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    return proc.returncode, (out or b"").decode(errors="replace").strip()
+
+
+async def browser_handler(request: web.Request) -> web.Response:
+    """Control the Chromium kiosk browser from the phone.
+
+    Actions:
+      navigate/<page>  — open a page  (app | tv | operator | control)
+      exit-kiosk       — reopen without --kiosk flag (windowed, escapable)
+      kiosk            — reopen in kiosk/fullscreen mode
+      refresh          — reload current page (Ctrl+R via xdotool)
+      close            — kill the browser
+    """
+    action = request.match_info.get("action", "")
+
+    browser_bin = "chromium-browser" if Path("/usr/bin/chromium-browser").exists() else "chromium"
+
+    if action.startswith("navigate/"):
+        page_key = action.split("/", 1)[1]
+        url = _BROWSER_PAGES.get(page_key)
+        if not url:
+            return web.json_response({"ok": False, "reason": f"unknown page '{page_key}'"}, status=400)
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars --no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": f"navigate:{url}"})
+
+    if action == "exit-kiosk":
+        # Reopen in a normal resizable window — user can then use Alt+F4 or close button
+        url = _BROWSER_PAGES["app"]
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --start-maximized --noerrdialogs --no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": "exit-kiosk"})
+
+    if action == "kiosk":
+        url = _BROWSER_PAGES["app"]
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars --no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": "kiosk"})
+
+    if action == "refresh":
+        rc, out = await _run(
+            "xdotool search --onlyvisible --class chromium key --clearmodifiers ctrl+r"
+        )
+        return web.json_response({"ok": rc == 0, "action": "refresh", "detail": out})
+
+    if action == "close":
+        await _run("pkill -f chromium 2>/dev/null")
+        return web.json_response({"ok": True, "action": "close"})
+
+    if action.startswith("language/"):
+        lang = action.split("/", 1)[1]  # "ar" | "en" | "hu" | "all"
+        msg = json.dumps({"type": "lang_switch", "lang": lang})
+        # Broadcast to all WS browser clients (index.html)
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(msg)
+        # Also push to SSE listeners (tv.html)
+        sse_payload = json.dumps({"lang_switch": lang})
+        for q in list(_sse_listeners):
+            try:
+                q.put_nowait(sse_payload)
+            except asyncio.QueueFull:
+                pass
+        return web.json_response({"ok": True, "lang": lang})
+
+    return web.json_response({"ok": False, "reason": "unknown browser action"}, status=400)
+
+
+async def server_control_handler(request: web.Request) -> web.Response:
+    """Restart or get status of the juma systemd service."""
+    action = request.match_info.get("action", "")
+
+    if action == "restart":
+        log("[server] restart requested via phone")
+        # Schedule restart after response is sent so the response completes
+        asyncio.get_event_loop().call_later(
+            1.0, lambda: asyncio.ensure_future(_run("systemctl restart juma.service"))
+        )
+        return web.json_response({"ok": True, "action": "restart", "note": "restarting in 1s"})
+
+    if action == "status":
+        rc, out = await _run("systemctl is-active juma.service")
+        return web.json_response({"ok": True, "active": rc == 0, "state": out})
+
+    return web.json_response({"ok": False, "reason": "unknown server action"}, status=400)
+
+
+async def control_page_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the phone control page."""
+    ctrl_path = Path(__file__).parent / "templates" / "control.html"
+    if not ctrl_path.is_file():
+        return web.Response(status=404, text="control.html not found")
+    return web.FileResponse(ctrl_path)
 
 
 class AudioStreamTrack(MediaStreamTrack):
@@ -989,7 +1307,9 @@ async def webrtc_offer_handler(request: web.Request) -> web.Response:
 
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client used for OpenRouter requests."""
+    global _headless_client
     app["http_client"] = ClientSession()
+    _headless_client = ClientState(ws=_NullWebSocket())  # type: ignore[arg-type]
 
 
 async def on_cleanup(app: web.Application) -> None:
@@ -1020,9 +1340,25 @@ def create_app() -> web.Application:
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/stream", ws_handler)
 
-    # SSE text stream for React frontend
+    # SSE text stream
     sse_route = app.router.add_get("/stream/text", sse_text_handler)
     cors.add(sse_route)
+
+    # SSE audio stream (TV page)
+    audio_sse_route = app.router.add_get("/stream/audio", sse_audio_handler)
+    cors.add(audio_sse_route)
+
+    # TV display page
+    app.router.add_get("/tv", tv_handler)
+
+    # Phone remote control page + API
+    app.router.add_get("/control", control_page_handler)
+    ctrl_route = app.router.add_get("/api/control/{action}", control_handler)
+    cors.add(ctrl_route)
+    browser_route = app.router.add_get("/api/browser/{action:.*}", browser_handler)
+    cors.add(browser_route)
+    srv_route = app.router.add_get("/api/server/{action}", server_control_handler)
+    cors.add(srv_route)
 
     # WebRTC audio offer for React frontend
     webrtc_route = app.router.add_post("/webrtc/offer", webrtc_offer_handler)

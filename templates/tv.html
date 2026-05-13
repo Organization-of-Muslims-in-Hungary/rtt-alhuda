@@ -1,0 +1,476 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Juma Live — Display</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --bg: #080d18;
+        --surface: #0f1623;
+        --border: #1a2540;
+        --gold: #d4a843;
+        --gold-dim: rgba(212,168,67,0.12);
+        --accent: #3b82f6;
+        --purple: #a855f7;
+        --text: #f0f4ff;
+        --muted: #5a6b8a;
+        --green: #22c55e;
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        height: 100%;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", sans-serif;
+        overflow: hidden;
+      }
+
+      /* ── Layout ── */
+      .screen {
+        display: flex;
+        flex-direction: column;
+        height: 100vh;
+        position: relative;
+      }
+
+      /* ── Header bar ── */
+      .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 28px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+        flex-shrink: 0;
+        gap: 16px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .crescent { font-size: 24px; }
+
+      .brand-name {
+        font-size: 16px;
+        font-weight: 600;
+        color: var(--gold);
+      }
+
+      .brand-sub {
+        font-size: 10px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+      }
+
+      .lang-tabs {
+        display: flex;
+        gap: 6px;
+      }
+
+      .lang-tab {
+        padding: 7px 20px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: transparent;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 500;
+        font-family: "Inter", sans-serif;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+
+      .lang-tab:hover { border-color: #2a3f5f; color: var(--text); }
+
+      .lang-tab.active-ar {
+        border-color: var(--gold);
+        background: var(--gold-dim);
+        color: var(--gold);
+      }
+
+      .lang-tab.active-en {
+        border-color: var(--accent);
+        background: rgba(59,130,246,0.12);
+        color: #93c5fd;
+      }
+
+      .lang-tab.active-hu {
+        border-color: var(--purple);
+        background: rgba(168,85,247,0.12);
+        color: #d8b4fe;
+      }
+
+      .header-right {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .autoplay-toggle {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 12px;
+        color: var(--muted);
+        cursor: pointer;
+        user-select: none;
+      }
+
+      .autoplay-toggle input { cursor: pointer; accent-color: var(--green); }
+
+      .status-dot {
+        width: 8px; height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+        flex-shrink: 0;
+      }
+
+      .status-dot.live {
+        background: var(--green);
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%, 100% { opacity: 0.5; transform: scale(0.85); }
+        50% { opacity: 1; transform: scale(1.2); }
+      }
+
+      /* ── Main text area ── */
+      .text-area {
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 60px;
+        overflow: hidden;
+        position: relative;
+      }
+
+      .text-content {
+        max-width: 1100px;
+        width: 100%;
+        text-align: center;
+      }
+
+      /* Arabic */
+      .text-content.ar {
+        font-family: "Amiri", serif;
+        font-size: clamp(22px, 3.5vw, 48px);
+        line-height: 2;
+        direction: rtl;
+        text-align: right;
+        color: #f8f0dc;
+        word-spacing: 6px;
+      }
+
+      /* English */
+      .text-content.en {
+        font-size: clamp(20px, 2.8vw, 38px);
+        line-height: 1.7;
+        font-weight: 300;
+        color: var(--text);
+      }
+
+      /* Hungarian */
+      .text-content.hu {
+        font-size: clamp(20px, 2.8vw, 38px);
+        line-height: 1.7;
+        font-weight: 300;
+        color: #f3e8ff;
+      }
+
+      .placeholder {
+        color: var(--muted);
+        font-style: italic;
+        font-size: clamp(16px, 2vw, 24px);
+        font-family: "Inter", sans-serif;
+        font-weight: 300;
+      }
+
+      /* ── Gold accent line on active language ── */
+      .text-area::before {
+        content: "";
+        position: absolute;
+        top: 0; left: 60px; right: 60px;
+        height: 2px;
+        border-radius: 2px;
+        background: transparent;
+        transition: background 0.4s;
+      }
+
+      .text-area.ar::before { background: var(--gold); }
+      .text-area.en::before { background: var(--accent); }
+      .text-area.hu::before { background: var(--purple); }
+
+      /* ── Bottom bar ── */
+      .bottom-bar {
+        padding: 10px 28px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-shrink: 0;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .audio-status {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .audio-bar {
+        display: flex;
+        gap: 2px;
+        align-items: flex-end;
+        height: 14px;
+        opacity: 0;
+        transition: opacity 0.3s;
+      }
+
+      .audio-bar.playing { opacity: 1; }
+
+      .audio-bar span {
+        display: block;
+        width: 3px;
+        background: var(--green);
+        border-radius: 2px;
+        animation: none;
+      }
+
+      .audio-bar.playing span:nth-child(1) { animation: bar 0.8s ease-in-out infinite; height: 8px; }
+      .audio-bar.playing span:nth-child(2) { animation: bar 0.8s ease-in-out 0.15s infinite; height: 12px; }
+      .audio-bar.playing span:nth-child(3) { animation: bar 0.8s ease-in-out 0.3s infinite; height: 6px; }
+      .audio-bar.playing span:nth-child(4) { animation: bar 0.8s ease-in-out 0.1s infinite; height: 10px; }
+
+      @keyframes bar {
+        0%, 100% { transform: scaleY(0.4); }
+        50% { transform: scaleY(1); }
+      }
+
+      .link-home {
+        color: var(--muted);
+        text-decoration: none;
+        font-size: 11px;
+        padding: 4px 10px;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        transition: color 0.2s;
+      }
+      .link-home:hover { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <div class="screen">
+      <!-- Header -->
+      <header class="header">
+        <div class="brand">
+          <span class="crescent">☪</span>
+          <div>
+            <div class="brand-name">Juma Live</div>
+            <div class="brand-sub">Display Mode</div>
+          </div>
+        </div>
+
+        <div class="lang-tabs">
+          <button class="lang-tab active-ar" data-lang="ar">العربية</button>
+          <button class="lang-tab" data-lang="en">English</button>
+          <button class="lang-tab" data-lang="hu">Magyar</button>
+        </div>
+
+        <div class="header-right">
+          <label class="autoplay-toggle">
+            <input type="checkbox" id="autoplay-chk" checked />
+            Auto-play voice
+          </label>
+          <span class="status-dot" id="status-dot"></span>
+        </div>
+      </header>
+
+      <!-- Text display -->
+      <div class="text-area ar" id="text-area">
+        <div class="text-content ar" id="text-display">
+          <span class="placeholder">في انتظار التلاوة…</span>
+        </div>
+      </div>
+
+      <!-- Bottom bar -->
+      <div class="bottom-bar">
+        <div class="audio-status">
+          <div class="audio-bar" id="audio-bar">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <span id="audio-label">No audio</span>
+        </div>
+        <a href="/" class="link-home">Operator view →</a>
+      </div>
+    </div>
+
+    <script>
+    (() => {
+      // ── State ──
+      let activeLang = "ar";
+      // chunks[lang] = array of last N text chunks (we keep max 2)
+      const MAX_TV_CHUNKS = 2;
+      let chunks = { ar: [], en: [], hu: [] };
+      let audioQueues = { en: [], hu: [] };
+      let isPlaying = false;
+      let currentAudio = null;
+
+      const textArea   = document.getElementById("text-area");
+      const textDisplay = document.getElementById("text-display");
+      const statusDot  = document.getElementById("status-dot");
+      const audioBar   = document.getElementById("audio-bar");
+      const audioLabel = document.getElementById("audio-label");
+      const autoplayChk = document.getElementById("autoplay-chk");
+
+      const placeholders = {
+        ar: "في انتظار التلاوة…",
+        en: "Awaiting translation…",
+        hu: "Fordításra vár…",
+      };
+
+      // ── Language switching ──
+      function showLang(lang) {
+        if (lang && lang !== "all") activeLang = lang;
+        // If lang is null/"all", cycle to next or stay on current
+        document.querySelectorAll(".lang-tab").forEach(b => b.className = "lang-tab");
+        const activeBtn = document.querySelector(`.lang-tab[data-lang="${activeLang}"]`);
+        if (activeBtn) activeBtn.className = `lang-tab active-${activeLang}`;
+        textArea.className = `text-area ${activeLang}`;
+        textDisplay.className = `text-content ${activeLang}`;
+        renderText();
+      }
+
+      document.querySelectorAll(".lang-tab").forEach(btn => {
+        btn.addEventListener("click", () => showLang(btn.dataset.lang));
+      });
+
+      function renderText() {
+        const langChunks = chunks[activeLang];
+        if (!langChunks || langChunks.length === 0) {
+          textDisplay.innerHTML = `<span class="placeholder">${placeholders[activeLang]}</span>`;
+          return;
+        }
+        // Show up to 2 chunks: previous (dim) + current (bright)
+        // Each in its own <p>; current is last item
+        let html = "";
+        if (langChunks.length >= 2) {
+          html += `<p style="opacity:0.35;font-size:0.78em;margin-bottom:1em">${escHtml(langChunks[langChunks.length-2])}</p>`;
+        }
+        html += `<p>${escHtml(langChunks[langChunks.length-1])}</p>`;
+        textDisplay.innerHTML = html;
+      }
+
+      function escHtml(s) {
+        return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+      }
+
+      // ── Audio playback ──
+      function setAudioPlaying(playing, lang) {
+        isPlaying = playing;
+        audioBar.className = playing ? "audio-bar playing" : "audio-bar";
+        audioLabel.textContent = playing ? `Playing ${lang.toUpperCase()} audio…` : "No audio";
+      }
+
+      function playNextInQueue() {
+        // Only play queued audio for the language with audio available
+        for (const lang of [activeLang, "en", "hu"]) {
+          if (audioQueues[lang] && audioQueues[lang].length > 0) {
+            const b64 = audioQueues[lang].shift();
+            const audio = new Audio("data:audio/mp3;base64," + b64);
+            currentAudio = audio;
+            setAudioPlaying(true, lang);
+            audio.onended = () => {
+              currentAudio = null;
+              setAudioPlaying(false, "");
+              playNextInQueue();
+            };
+            audio.onerror = () => {
+              currentAudio = null;
+              setAudioPlaying(false, "");
+              playNextInQueue();
+            };
+            audio.play().catch(() => {
+              setAudioPlaying(false, "");
+              playNextInQueue();
+            });
+            return;
+          }
+        }
+      }
+
+      function enqueueAudio(lang, b64) {
+        if (!audioQueues[lang]) return;
+        audioQueues[lang].push(b64);
+        if (!isPlaying && autoplayChk.checked) {
+          playNextInQueue();
+        }
+      }
+
+      // ── SSE: Text stream ──
+      function connectTextSSE() {
+        const es = new EventSource("/stream/text");
+        es.onopen = () => { statusDot.className = "status-dot live"; };
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.lang_switch !== undefined) {
+              const l = data.lang_switch;
+              showLang(l === "all" ? null : l);
+              return;
+            }
+            if (data.ar !== undefined) {
+              if (data.ar.trim()) { chunks.ar.push(data.ar); if (chunks.ar.length > MAX_TV_CHUNKS) chunks.ar.shift(); }
+            }
+            if (data.en !== undefined) {
+              if (data.en.trim()) { chunks.en.push(data.en); if (chunks.en.length > MAX_TV_CHUNKS) chunks.en.shift(); }
+            }
+            if (data.hu !== undefined) {
+              if (data.hu.trim()) { chunks.hu.push(data.hu); if (chunks.hu.length > MAX_TV_CHUNKS) chunks.hu.shift(); }
+            }
+            renderText();
+          } catch {}
+        };
+        es.onerror = () => {
+          statusDot.className = "status-dot";
+          setTimeout(connectTextSSE, 3000);
+          es.close();
+        };
+      }
+
+      // ── SSE: Audio stream ──
+      function connectAudioSSE() {
+        const es = new EventSource("/stream/audio");
+        es.onmessage = (e) => {
+          try {
+            const data = JSON.parse(e.data);
+            if (data.lang && data.audio) {
+              enqueueAudio(data.lang, data.audio);
+            }
+          } catch {}
+        };
+        es.onerror = () => {
+          setTimeout(connectAudioSSE, 3000);
+          es.close();
+        };
+      }
+
+      connectTextSSE();
+      connectAudioSSE();
+    })();
+    </script>
+  </body>
+</html>
