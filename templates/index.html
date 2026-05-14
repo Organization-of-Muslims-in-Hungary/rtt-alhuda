@@ -755,9 +755,17 @@
               appendFlat(arabicText, msg.transcription);
               appendText(enText, msg.translation);
               appendText(huText, msg.translationHu);
+              // ttsEnAudio/ttsHuAudio may arrive here (old) or in tts_audio (new async patch)
               if (msg.ttsEnAudio) { ttsEnChunks.push(msg.ttsEnAudio); playEnBtn.disabled = false; }
               if (msg.ttsHuAudio) { ttsHuChunks.push(msg.ttsHuAudio); playHuBtn.disabled = false; }
               addNetworkCard(msg);
+              return;
+            }
+
+            if (msg.type === "tts_audio") {
+              // Async TTS patch: audio arrives separately after transcription text
+              if (msg.ttsEnAudio) { ttsEnChunks.push(msg.ttsEnAudio); playEnBtn.disabled = false; }
+              if (msg.ttsHuAudio) { ttsHuChunks.push(msg.ttsHuAudio); playHuBtn.disabled = false; }
               return;
             }
 

@@ -1,9 +1,11 @@
 <!doctype html>
-<html lang="en">
+<html lang="ar" dir="rtl">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-    <title>Juma Control</title>
+    <title>تحكم جمعة</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
     <style>
       :root {
         --bg: #080d18;
@@ -22,7 +24,8 @@
         min-height: 100%;
         background: var(--bg);
         color: var(--text);
-        font-family: "Segoe UI", Inter, sans-serif;
+        font-family: "Amiri", "Segoe UI", sans-serif;
+        direction: rtl;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -34,8 +37,19 @@
         display: flex; flex-direction: column; align-items: center; gap: 2px;
       }
       .logo .crescent { font-size: 32px; }
-      .logo .name { font-size: 20px; font-weight: 600; color: var(--gold); }
-      .logo .sub { font-size: 11px; color: var(--muted); letter-spacing: .07em; text-transform: uppercase; }
+      .logo .name { font-size: 22px; font-weight: 700; color: var(--gold); }
+      .logo .sub { font-size: 12px; color: var(--muted); letter-spacing: .04em; }
+
+      /* Language toggle top-right */
+      .lang-toggle {
+        position: fixed; top: 14px; left: 14px;
+        background: var(--surface); border: 1px solid var(--border);
+        border-radius: 8px; padding: 6px 14px;
+        font-size: 12px; color: var(--muted);
+        text-decoration: none; transition: color .2s;
+        font-family: "Segoe UI", sans-serif;
+      }
+      .lang-toggle:hover { color: var(--gold); }
 
       .card {
         width: 100%; max-width: 380px;
@@ -45,13 +59,11 @@
         padding: 16px;
       }
       .card-title {
-        font-size: 11px; font-weight: 600; color: var(--muted);
-        text-transform: uppercase; letter-spacing: .08em;
-        margin-bottom: 12px;
+        font-size: 13px; font-weight: 700; color: var(--muted);
+        margin-bottom: 12px; direction: rtl;
       }
 
-      /* Status row */
-      .status-row { display: flex; align-items: center; gap: 12px; }
+      .status-row { display: flex; align-items: center; gap: 12px; flex-direction: row-reverse; justify-content: flex-end; }
       .big-dot {
         width: 16px; height: 16px; border-radius: 50%;
         background: var(--muted); flex-shrink: 0; transition: background .3s;
@@ -64,17 +76,18 @@
         0%,100% { transform: scale(.85); opacity: .6; }
         50%  { transform: scale(1.15); opacity: 1; }
       }
-      .status-label { font-size: 17px; font-weight: 600; }
+      .status-label { font-size: 18px; font-weight: 700; }
       .status-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
-      /* Buttons */
-      .btn-row { display: flex; gap: 10px; }
+      .btn-row { display: flex; gap: 10px; direction: rtl; }
       .btn {
         flex: 1; padding: 16px 8px;
         border-radius: 12px; border: 2px solid;
-        font-size: 15px; font-weight: 600; font-family: inherit;
+        font-size: 16px; font-weight: 700;
+        font-family: "Amiri", sans-serif;
         cursor: pointer; transition: all .2s;
         background: transparent;
+        direction: rtl;
       }
       .btn:disabled { opacity: .3; cursor: not-allowed; }
       .btn-green { border-color: var(--green); color: var(--green); }
@@ -90,102 +103,91 @@
       .btn-muted { border-color: var(--border); color: var(--muted); }
       .btn-muted:hover:not(:disabled) { background: rgba(255,255,255,.05); }
 
-      .btn-sm { padding: 11px 8px; font-size: 13px; border-radius: 10px; }
+      .btn-sm { padding: 11px 8px; font-size: 14px; border-radius: 10px; }
 
-      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-      .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+      .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; direction: rtl; }
 
       .toast {
         position: fixed; bottom: 24px; left: 50%;
         transform: translateX(-50%);
         background: #1e293b; border: 1px solid var(--border);
         border-radius: 10px; padding: 10px 20px;
-        font-size: 13px; opacity: 0; transition: opacity .3s;
-        pointer-events: none; white-space: nowrap;
+        font-size: 14px; opacity: 0; transition: opacity .3s;
+        pointer-events: none; white-space: nowrap; direction: rtl;
       }
       .toast.show { opacity: 1; }
-
-      .divider { width: 100%; max-width: 380px; border: none; border-top: 1px solid var(--border); }
-
-      .lang-toggle {
-        position: fixed; top: 14px; right: 14px;
-        background: var(--surface); border: 1px solid var(--border);
-        border-radius: 8px; padding: 6px 14px;
-        font-size: 12px; color: var(--muted);
-        text-decoration: none; transition: color .2s;
-      }
-      .lang-toggle:hover { color: var(--gold); }
     </style>
   </head>
   <body>
-    <a class="lang-toggle" href="/control/ar">عربي</a>
+
+    <a class="lang-toggle" href="/control">English</a>
 
     <div class="logo">
       <span class="crescent">☪</span>
-      <div class="name">Juma Remote</div>
-      <div class="sub">Phone control panel</div>
+      <div class="name">تحكم جمعة</div>
+      <div class="sub">لوحة التحكم عن بُعد</div>
     </div>
 
     <!-- Recording status + start/stop -->
     <div class="card">
-      <div class="card-title">🎙 Translation</div>
+      <div class="card-title">🎙 الترجمة الفورية</div>
       <div class="status-row" style="margin-bottom:14px">
         <div class="big-dot" id="dot"></div>
         <div>
-          <div class="status-label" id="status-label">Checking…</div>
-          <div class="status-sub" id="status-sub">Connecting to KhutbaPi</div>
+          <div class="status-label" id="status-label">جارٍ التحقق…</div>
+          <div class="status-sub" id="status-sub">الاتصال بـ KhutbaPi</div>
         </div>
       </div>
       <div class="btn-row">
-        <button class="btn btn-green" id="btn-start" disabled>▶ Start</button>
-        <button class="btn btn-red"   id="btn-stop"  disabled>■ Stop</button>
+        <button class="btn btn-green" id="btn-start" disabled>▶ بدء</button>
+        <button class="btn btn-red"   id="btn-stop"  disabled>■ إيقاف</button>
       </div>
     </div>
 
     <!-- Browser / Display -->
     <div class="card">
-      <div class="card-title">📺 Display (Projector)</div>
+      <div class="card-title">📺 شاشة العرض</div>
       <div class="grid2" style="margin-bottom:10px">
-        <button class="btn btn-gold btn-sm" onclick="browserNav('app')">Main App</button>
-        <button class="btn btn-blue btn-sm" onclick="browserNav('tv')">TV View</button>
-        <button class="btn btn-muted btn-sm" onclick="browserNav('operator')">Operator</button>
-        <button class="btn btn-muted btn-sm" onclick="browserNav('control')">Control</button>
+        <button class="btn btn-gold btn-sm" onclick="browserNav('app')">التطبيق الرئيسي</button>
+        <button class="btn btn-blue btn-sm" onclick="browserNav('tv')">عرض التلفاز</button>
+        <button class="btn btn-muted btn-sm" onclick="browserNav('operator')">لوحة المشغّل</button>
+        <button class="btn btn-muted btn-sm" onclick="browserNav('control')">التحكم</button>
       </div>
       <div class="btn-row">
-        <button class="btn btn-muted btn-sm" onclick="browserAct('refresh')">&#8635; Refresh</button>
-        <button class="btn btn-muted btn-sm" onclick="browserAct('exit-kiosk')">Exit Fullscreen</button>
-        <button class="btn btn-muted btn-sm" onclick="browserAct('kiosk')">Fullscreen</button>
+        <button class="btn btn-muted btn-sm" onclick="browserAct('refresh')">&#8635; تحديث</button>
+        <button class="btn btn-muted btn-sm" onclick="browserAct('exit-kiosk')">خروج ملء الشاشة</button>
+        <button class="btn btn-muted btn-sm" onclick="browserAct('kiosk')">ملء الشاشة</button>
       </div>
     </div>
 
     <!-- Language switcher -->
     <div class="card">
-      <div class="card-title">🌐 Display Language</div>
+      <div class="card-title">🌐 لغة الشاشة</div>
       <div class="btn-row">
-        <button class="btn btn-muted btn-sm" id="lang-btn-all" onclick="switchDisplayLang(null)">All</button>
-        <button class="btn btn-gold  btn-sm" id="lang-btn-ar"  onclick="switchDisplayLang('ar')">عر Arabic</button>
-        <button class="btn btn-blue  btn-sm" id="lang-btn-en"  onclick="switchDisplayLang('en')">EN English</button>
-        <button class="btn btn-muted btn-sm" id="lang-btn-hu"  onclick="switchDisplayLang('hu')">HU Magyar</button>
+        <button class="btn btn-muted btn-sm" id="lang-btn-all" onclick="switchDisplayLang(null)">الكل</button>
+        <button class="btn btn-gold  btn-sm" id="lang-btn-ar"  onclick="switchDisplayLang('ar')">عربي</button>
+        <button class="btn btn-blue  btn-sm" id="lang-btn-en"  onclick="switchDisplayLang('en')">إنجليزي</button>
+        <button class="btn btn-muted btn-sm" id="lang-btn-hu"  onclick="switchDisplayLang('hu')">مجري</button>
       </div>
     </div>
 
     <!-- Server -->
     <div class="card">
-      <div class="card-title">⚙️ Server</div>
+      <div class="card-title">⚙️ الخادم</div>
       <div class="btn-row">
-        <button class="btn btn-orange btn-sm" onclick="serverAct('restart')">&#8635; Restart Server</button>
-        <button class="btn btn-muted btn-sm" id="srv-status">Status: …</button>
+        <button class="btn btn-orange btn-sm" onclick="serverAct('restart')">&#8635; إعادة تشغيل</button>
+        <button class="btn btn-muted btn-sm" id="srv-status">الحالة: …</button>
       </div>
     </div>
 
     <!-- Quick links -->
     <div class="card">
-      <div class="card-title">🔗 Open in this browser</div>
+      <div class="card-title">🔗 فتح في هذا المتصفح</div>
       <div class="grid2">
-        <a href="/app"      class="btn btn-gold  btn-sm" style="text-decoration:none;text-align:center;display:block">Main App</a>
-        <a href="/tv"       class="btn btn-blue  btn-sm" style="text-decoration:none;text-align:center;display:block">TV View</a>
-        <a href="/"         class="btn btn-muted btn-sm" style="text-decoration:none;text-align:center;display:block">Operator</a>
-        <a href="/reports"  class="btn btn-muted btn-sm" style="text-decoration:none;text-align:center;display:block">Reports</a>
+        <a href="/app"     class="btn btn-gold  btn-sm" style="text-decoration:none;text-align:center;display:block">التطبيق الرئيسي</a>
+        <a href="/tv"      class="btn btn-blue  btn-sm" style="text-decoration:none;text-align:center;display:block">عرض التلفاز</a>
+        <a href="/"        class="btn btn-muted btn-sm" style="text-decoration:none;text-align:center;display:block">لوحة المشغّل</a>
+        <a href="/reports" class="btn btn-muted btn-sm" style="text-decoration:none;text-align:center;display:block">التقارير</a>
       </div>
     </div>
 
@@ -193,9 +195,9 @@
 
     <script>
     (() => {
-      const dot   = document.getElementById('dot');
-      const label = document.getElementById('status-label');
-      const sub   = document.getElementById('status-sub');
+      const dot      = document.getElementById('dot');
+      const label    = document.getElementById('status-label');
+      const sub      = document.getElementById('status-sub');
       const btnStart = document.getElementById('btn-start');
       const btnStop  = document.getElementById('btn-stop');
       const srvBtn   = document.getElementById('srv-status');
@@ -213,15 +215,15 @@
       function applyStatus(data) {
         if (data.recording) {
           dot.className = 'big-dot recording';
-          label.textContent = '● Recording';
+          label.textContent = '● يسجّل';
           const s = data.elapsed_seconds;
-          sub.textContent = s != null ? `Running ${Math.floor(s/60)}m ${s%60}s` : 'Live';
+          sub.textContent = s != null ? `يعمل ${Math.floor(s/60)}د ${s%60}ث` : 'مباشر';
           btnStart.disabled = true;
           btnStop.disabled  = false;
         } else {
           dot.className = 'big-dot';
-          label.textContent = 'Stopped';
-          sub.textContent = data.listeners > 0 ? `${data.listeners} display(s) connected` : 'Ready';
+          label.textContent = 'متوقف';
+          sub.textContent = data.listeners > 0 ? `${data.listeners} شاشة متصلة` : 'جاهز';
           btnStart.disabled = false;
           btnStop.disabled  = true;
         }
@@ -232,7 +234,8 @@
           const r = await fetch('/api/control/status');
           applyStatus(await r.json());
         } catch {
-          label.textContent = 'Offline'; sub.textContent = 'Cannot reach KhutbaPi';
+          label.textContent = 'غير متصل';
+          sub.textContent = 'تعذّر الوصول إلى KhutbaPi';
           dot.className = 'big-dot';
           btnStart.disabled = btnStop.disabled = true;
         }
@@ -242,8 +245,8 @@
         try {
           const r = await fetch('/api/server/status');
           const d = await r.json();
-          srvBtn.textContent = 'Status: ' + (d.active ? '✅ running' : '❌ stopped');
-        } catch { srvBtn.textContent = 'Status: unknown'; }
+          srvBtn.textContent = 'الحالة: ' + (d.active ? '✅ يعمل' : '❌ متوقف');
+        } catch { srvBtn.textContent = 'الحالة: غير معروف'; }
       }
 
       async function sendAction(action) {
@@ -251,27 +254,31 @@
         try {
           const r = await fetch(`/api/control/${action}`);
           const d = await r.json();
-          showToast(d.ok ? (action==='start' ? '▶ Started!' : '■ Stopped') : `Error: ${d.reason}`, d.ok);
-        } catch { showToast('Network error', false); }
+          showToast(d.ok ? (action==='start' ? '▶ بدأ التسجيل' : '■ توقف التسجيل') : `خطأ: ${d.reason}`, d.ok);
+        } catch { showToast('خطأ في الشبكة', false); }
         await fetchStatus();
       }
 
       window.browserNav = async (page) => {
-        showToast(`Opening ${page}…`, true);
+        showToast(`جارٍ فتح ${page}…`, true);
         try {
           const r = await fetch(`/api/browser/navigate/${page}`);
           const d = await r.json();
-          showToast(d.ok ? `✔ Opened ${page}` : `Error: ${d.reason}`, d.ok);
-        } catch { showToast('Network error', false); }
+          showToast(d.ok ? `✔ تم الفتح` : `خطأ: ${d.reason}`, d.ok);
+        } catch { showToast('خطأ في الشبكة', false); }
       };
 
       window.browserAct = async (action) => {
-        const labels = {'refresh':'✔ Refreshed','exit-kiosk':'Exited fullscreen','kiosk':'Fullscreen on'};
+        const labels = {
+          'refresh':    '✔ تم التحديث',
+          'exit-kiosk': 'تم الخروج من ملء الشاشة',
+          'kiosk':      'ملء الشاشة مفعّل'
+        };
         try {
           const r = await fetch(`/api/browser/${action}`);
           const d = await r.json();
-          showToast(d.ok ? (labels[action]||'✔ Done') : `Error: ${d.reason}`, d.ok);
-        } catch { showToast('Network error', false); }
+          showToast(d.ok ? (labels[action] || '✔ تم') : `خطأ: ${d.reason}`, d.ok);
+        } catch { showToast('خطأ في الشبكة', false); }
       };
 
       let _displayLang = null;
@@ -282,7 +289,6 @@
           const isActive = (l === 'all') ? (_displayLang === null) : (_displayLang === l);
           b.style.fontWeight = isActive ? '700' : '400';
           b.style.borderColor = isActive ? 'var(--gold)' : '';
-          b.style.opacity = '1';
         });
       }
       window.switchDisplayLang = async (lang) => {
@@ -292,18 +298,18 @@
         try {
           const r = await fetch(`/api/browser/language/${send}`);
           const d = await r.json();
-          showToast(d.ok ? `✔ Language: ${send.toUpperCase()}` : `Error: ${d.reason}`, d.ok);
-        } catch { showToast('Network error', false); }
+          showToast(d.ok ? `✔ اللغة: ${send.toUpperCase()}` : `خطأ: ${d.reason}`, d.ok);
+        } catch { showToast('خطأ في الشبكة', false); }
       };
-      _updateLangBtns();  // init highlight on "All"
+      _updateLangBtns();
 
       window.serverAct = async (action) => {
-        showToast('Restarting server…', true);
+        showToast('جارٍ إعادة تشغيل الخادم…', true);
         try {
           const r = await fetch(`/api/server/${action}`);
           const d = await r.json();
-          showToast(d.ok ? '✔ Server restarting' : `Error: ${d.reason}`, d.ok);
-        } catch { showToast('Network error', false); }
+          showToast(d.ok ? '✔ الخادم يُعاد تشغيله' : `خطأ: ${d.reason}`, d.ok);
+        } catch { showToast('خطأ في الشبكة', false); }
         setTimeout(fetchServerStatus, 3000);
       };
 

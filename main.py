@@ -1242,10 +1242,18 @@ async def server_control_handler(request: web.Request) -> web.Response:
 
 
 async def control_page_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the phone control page."""
+    """Serve the phone control page (English)."""
     ctrl_path = Path(__file__).parent / "templates" / "control.html"
     if not ctrl_path.is_file():
         return web.Response(status=404, text="control.html not found")
+    return web.FileResponse(ctrl_path)
+
+
+async def control_page_ar_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the phone control page (Arabic)."""
+    ctrl_path = Path(__file__).parent / "templates" / "control_ar.html"
+    if not ctrl_path.is_file():
+        return web.Response(status=404, text="control_ar.html not found")
     return web.FileResponse(ctrl_path)
 
 
@@ -1378,6 +1386,7 @@ def create_app() -> web.Application:
 
     # Phone remote control page + API
     app.router.add_get("/control", control_page_handler)
+    app.router.add_get("/control/ar", control_page_ar_handler)
     ctrl_route = app.router.add_get("/api/control/{action}", control_handler)
     cors.add(ctrl_route)
     browser_route = app.router.add_get("/api/browser/{action:.*}", browser_handler)
