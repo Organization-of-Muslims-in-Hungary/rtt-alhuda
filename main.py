@@ -568,6 +568,42 @@ async def send_chunk_to_openrouter(
     return {}
 
 
+async def _generate_and_send_tts(
+    client: ClientState,
+    http: ClientSession,
+    new_translation: str,
+    new_translation_hu: str,
+) -> None:
+    """Generate TTS and push it to clients without blocking main text loop."""
+    tts_en_bytes, tts_hu_bytes = await asyncio.gather(
+        synthesize_openrouter_tts(new_translation, OPENROUTER_TTS_VOICE_EN, http) if new_translation.strip() else asyncio.sleep(0, result=None),
+        synthesize_openrouter_tts(new_translation_hu, OPENROUTER_TTS_VOICE_HU, http) if new_translation_hu.strip() else asyncio.sleep(0, result=None),
+    )
+
+    if not tts_en_bytes and not tts_hu_bytes:
+        return
+
+    # Broadcast audio to TV page SSE listeners
+    if tts_en_bytes:
+        await _broadcast_audio("en", base64.b64encode(tts_en_bytes).decode("ascii"))
+    if tts_hu_bytes:
+        await _broadcast_audio("hu", base64.b64encode(tts_hu_bytes).decode("ascii"))
+
+    # Push to legacy WebSocket UI
+    message = {"type": "tts_audio"}
+    if tts_en_bytes:
+        message["ttsEnAudio"] = base64.b64encode(tts_en_bytes).decode("ascii")
+    if tts_hu_bytes:
+        message["ttsHuAudio"] = base64.b64encode(tts_hu_bytes).decode("ascii")
+
+    if not client.ws.closed:
+        await client.ws.send_str(json.dumps(message))
+    else:
+        for c in _all_ws_browsers:
+            if not c.ws.closed:
+                await c.ws.send_str(json.dumps(message))
+
+
 async def _process_chunk(
     client: ClientState,
     http: ClientSession,
@@ -608,11 +644,11 @@ async def _process_chunk(
         new_translation = _sanitize_output(new_translation, word_cap=_MAX_TRANSLATION_WORDS)
         new_translation_hu = _sanitize_output(new_translation_hu, word_cap=_MAX_TRANSLATION_WORDS)
 
-        # Generate TTS for both languages in parallel
-        tts_en_bytes, tts_hu_bytes = await asyncio.gather(
-            synthesize_openrouter_tts(new_translation, OPENROUTER_TTS_VOICE_EN, http) if new_translation.strip() else asyncio.sleep(0, result=None),
-            synthesize_openrouter_tts(new_translation_hu, OPENROUTER_TTS_VOICE_HU, http) if new_translation_hu.strip() else asyncio.sleep(0, result=None),
-        )
+        # Fire off TTS generation in the background so it doesn't block WS message
+        if new_translation.strip() or new_translation_hu.strip():
+            asyncio.create_task(
+                _generate_and_send_tts(client, http, new_translation, new_translation_hu)
+            )
 
         async with client.lock:
             client.chunk_history.append(
@@ -648,11 +684,6 @@ async def _process_chunk(
             "chunkDurationSeconds": chunk_duration_seconds,
             "latencyMs": latency_ms,
         }
-        # Add TTS audio as base64 (for legacy WebSocket UI)
-        if tts_en_bytes:
-            message["ttsEnAudio"] = base64.b64encode(tts_en_bytes).decode("ascii")
-        if tts_hu_bytes:
-            message["ttsHuAudio"] = base64.b64encode(tts_hu_bytes).decode("ascii")
 
         if not client.ws.closed:
             await client.ws.send_str(json.dumps(message))
@@ -661,12 +692,6 @@ async def _process_chunk(
             for c in _all_ws_browsers:
                 if not c.ws.closed:
                     await c.ws.send_str(json.dumps(message))
-
-        # Broadcast audio to TV page SSE listeners
-        if tts_en_bytes:
-            await _broadcast_audio("en", base64.b64encode(tts_en_bytes).decode("ascii"))
-        if tts_hu_bytes:
-            await _broadcast_audio("hu", base64.b64encode(tts_hu_bytes).decode("ascii"))
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
         await send_log(client, f"Error processing chunk ({type(exc).__name__}): {exc}", "error")
