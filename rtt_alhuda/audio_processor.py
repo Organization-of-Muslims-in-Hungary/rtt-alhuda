@@ -45,41 +45,45 @@ async def _process_chunk(
     wav_b64: str,
     new_audio_start_sample: int,
     new_audio_end_sample: int,
-    original_transcription: str,
-    original_translation: str,
+    original_ar: str,
+    original_en: str,
+    original_hu: str,
     chunk_duration_seconds: float,
 ):
     try:
         start_time = time.time()
-        lang_name = "Hungarian" if client.media_tts_language == "hu" else "English"
         result = await send_chunk_to_openrouter(
             http,
             wav_b64,
-            original_transcription,
-            original_translation,
-            translation_language=lang_name,
+            original_ar,
+            original_en,
+            original_hu,
         )
         latency_ms = int((time.time() - start_time) * 1000)
 
-        new_transcription = str(result.get("new_additional_transcription", ""))
-        new_translation = str(result.get("new_additional_translation", ""))
+        new_ar = str(result.get("ar", ""))
+        new_en = str(result.get("en", ""))
+        new_hu = str(result.get("hu", ""))
 
         async with client.lock:
             client.chunk_history.append(
                 ChunkInfo(
                     start_sample=new_audio_start_sample,
                     end_sample=new_audio_end_sample,
-                    transcription=new_transcription,
-                    translation=new_translation,
+                    ar=new_ar,
+                    en=new_en,
+                    hu=new_hu,
                 )
             )
 
         message = {
             "type": "transcription",
-            "transcription": new_transcription,
-            "translation": new_translation,
-            "originalTranscription": original_transcription,
-            "originalTranslation": original_translation,
+            "ar": new_ar,
+            "en": new_en,
+            "hu": new_hu,
+            "originalAr": original_ar,
+            "originalEn": original_en,
+            "originalHu": original_hu,
             "rawResponse": json.dumps(result),
             "originalAudioChunk": wav_b64,
             "processedChunks": 1,
@@ -89,9 +93,16 @@ async def _process_chunk(
         }
         await send_transcription(client, message)
 
-        if new_translation.strip() and client.media_tts_queue is not None:
+        # TTS: use English or Hungarian translation based on client setting
+        tts_text = ""
+        if client.media_tts_language == "hu" and new_hu.strip():
+            tts_text = new_hu.strip()
+        elif new_en.strip():
+            tts_text = new_en.strip()
+
+        if tts_text and client.media_tts_queue is not None:
             asyncio.create_task(
-                _enqueue_tts(client, http, new_translation.strip()),
+                _enqueue_tts(client, http, tts_text),
                 name="tts-enqueue",
             )
 
@@ -141,16 +152,20 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
 
                 if history_to_include:
                     past_start_sample = history_to_include[0].start_sample
-                    original_transcription = " ".join(
-                        c.transcription for c in history_to_include if c.transcription
+                    original_ar = " ".join(
+                        c.ar for c in history_to_include if c.ar
                     ).strip()
-                    original_translation = " ".join(
-                        c.translation for c in history_to_include if c.translation
+                    original_en = " ".join(
+                        c.en for c in history_to_include if c.en
+                    ).strip()
+                    original_hu = " ".join(
+                        c.hu for c in history_to_include if c.hu
                     ).strip()
                 else:
                     past_start_sample = client.last_chunk_end_sample
-                    original_transcription = ""
-                    original_translation = ""
+                    original_ar = ""
+                    original_en = ""
+                    original_hu = ""
 
                 new_audio_start_sample = client.last_chunk_end_sample
                 new_audio_end_sample = end_sample
@@ -201,8 +216,9 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 wav_b64,
                 new_audio_start_sample,
                 new_audio_end_sample,
-                original_transcription,
-                original_translation,
+                original_ar,
+                original_en,
+                original_hu,
                 chunk_duration_seconds=total_samples / SAMPLE_RATE,
             )
 
