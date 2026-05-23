@@ -235,6 +235,7 @@
     <div class="ticker">
       <div class="audio-bar" id="audio-bar"><span></span><span></span><span></span><span></span></div>
       <div class="status-dot" id="status-dot"></div>
+      <span id="screen-id-badge" style="font-size:11px;color:rgba(255,255,255,.3);font-family:monospace;letter-spacing:.05em"></span>
     </div>
 
     <div class="screen">
@@ -382,6 +383,28 @@
         });
       }
 
+      // ─── Screen WebSocket (ID + per-screen lang control) ─────────
+      const idBadge = document.getElementById("screen-id-badge");
+      function connectScreenWS() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${location.host}/ws/screen?page=screen`);
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "init") {
+              if (idBadge) idBadge.textContent = "ID: " + msg.id;
+            }
+            if (msg.type === "set_lang") {
+              applyLangFilter(msg.lang === "all" ? null : msg.lang);
+            }
+          } catch {}
+        };
+        ws.onclose = () => {
+          if (idBadge) idBadge.textContent = "";
+          setTimeout(connectScreenWS, 4000);
+        };
+      }
+
       // ─── SSE: Text ───────────────────────────────────────────────
       function connectText() {
         const es = new EventSource("/stream/text");
@@ -393,9 +416,10 @@
               applyLangFilter(d.lang_switch);
               return;
             }
-            if (d.ar) _showChunk(arText, d.ar);
-            if (d.en) _showChunk(enText, d.en);
-            if (d.hu) _showChunk(huText, d.hu);
+            // Use ONLY new_ar/en/hu (current chunk). Never fall back to full text.
+            if (d.new_ar) _showChunk(arText, d.new_ar);
+            if (d.new_en) _showChunk(enText, d.new_en);
+            if (d.new_hu) _showChunk(huText, d.new_hu);
           } catch {}
         };
         es.onerror = () => {
@@ -420,6 +444,7 @@
         es.onerror = () => { es.close(); setTimeout(connectAudio, 3000); };
       }
 
+      connectScreenWS();
       connectText();
       connectAudio();
     })();

@@ -242,6 +242,7 @@
             Auto-play
           </label>
           <span class="status-dot" id="status-dot"></span>
+          <span id="screen-id-badge" style="font-size:10px;color:var(--muted);letter-spacing:.06em;font-family:monospace"></span>
           <a href="/" class="link-home">Operator →</a>
         </div>
       </header>
@@ -302,7 +303,7 @@
       const wrapEn = document.getElementById("wrap-en");
       const wrapHu = document.getElementById("wrap-hu");
 
-      // ── Text rendering: chunk-per-paragraph ──
+      // ── Text rendering: chunk-per-paragraph (typewriter, rolling 2 chunks) ──
       const _queues = new WeakMap();
 
       function _appendChunk(container, text) {
@@ -317,16 +318,16 @@
         const p = document.createElement("p");
         container.appendChild(p);
 
-        // Prune to MAX_CHUNKS
+        // Prune to MAX_CHUNKS — oldest paragraph slides off the top
         const all = [...container.querySelectorAll("p")];
         while (all.length > MAX_CHUNKS) { all.shift().remove(); }
 
-        // Update age classes
+        // Update age classes (age-0 = current, age-1 = previous)
         [...container.querySelectorAll("p")].forEach((c, i, arr) => {
           c.className = "age-" + (arr.length - 1 - i);
         });
 
-        // Typewriter
+        // Typewriter at 120ms/word (comfortable reading speed)
         const words = v.split(/\s+/).filter(Boolean);
         _queues.set(p, words.map((w, i) => (i === 0 ? "" : " ") + w));
         _drip(p, container);
@@ -337,11 +338,10 @@
         if (!q || !q.length) return;
         p.textContent += q.shift();
         container.scrollTop = container.scrollHeight;
-        setTimeout(() => _drip(p, container), 95);
+        setTimeout(() => _drip(p, container), 120 + Math.random() * 30);
       }
 
-      // ── Language filter (from phone/operator) ──
-      // "all" = show everything  |  "ar"/"en"/"hu" = highlight that panel
+      // ── Language filter ──
       function applyLangFilter(lang) {
         const all = (lang === null || lang === "all");
         [
@@ -382,7 +382,32 @@
         if (!isPlaying && autoplayChk.checked) playNextInQueue();
       }
 
-      // ── SSE: Text ──
+      // ── Screen ID (corner badge) ──
+      let _screenId = null;
+      const idBadge = document.getElementById("screen-id-badge");
+
+      function connectScreenWS() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${location.host}/ws/screen?page=tv`);
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "init") {
+              _screenId = msg.id;
+              if (idBadge) idBadge.textContent = "ID: " + msg.id;
+            }
+            if (msg.type === "set_lang") {
+              applyLangFilter(msg.lang === "all" ? null : msg.lang);
+            }
+          } catch {}
+        };
+        ws.onclose = () => {
+          if (idBadge) idBadge.textContent = "";
+          setTimeout(connectScreenWS, 4000);
+        };
+      }
+
+      // ── SSE: Text (uses new_ar/en/hu to avoid full-text repetition) ──
       function connectTextSSE() {
         const es = new EventSource("/stream/text");
         es.onopen = () => { statusDot.className = "status-dot live"; };
@@ -393,9 +418,11 @@
               applyLangFilter(d.lang_switch);
               return;
             }
-            if (d.ar) _appendChunk(arText, d.ar);
-            if (d.en) _appendChunk(enText, d.en);
-            if (d.hu) _appendChunk(huText, d.hu);
+            // Use ONLY new_ar/en/hu (current chunk). Never fall back to full
+            // accumulated ar/en/hu — that causes the entire khutba to replay.
+            if (d.new_ar) _appendChunk(arText, d.new_ar);
+            if (d.new_en) _appendChunk(enText, d.new_en);
+            if (d.new_hu) _appendChunk(huText, d.new_hu);
           } catch {}
         };
         es.onerror = () => {
@@ -417,6 +444,7 @@
         es.onerror = () => { setTimeout(connectAudioSSE, 3000); es.close(); };
       }
 
+      connectScreenWS();
       connectTextSSE();
       connectAudioSSE();
     })();

@@ -149,6 +149,11 @@
   <body>
     <div class="dot"  id="dot"></div>
     <div class="badge" id="badge">{{LABEL}}</div>
+    <div id="screen-id-corner" style="
+      position:fixed;top:10px;left:14px;
+      font-size:11px;color:rgba(255,255,255,.25);font-family:monospace;
+      letter-spacing:.06em;z-index:99
+    "></div>
     <div class="accent-line"></div>
 
     <div class="screen">
@@ -186,6 +191,7 @@
         if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
 
         // Fade out the old sentence then remove it
+        const hadPrevious = !!currentEl;
         if (currentEl) {
           const old = currentEl;
           old.classList.add("leaving");
@@ -193,7 +199,8 @@
           currentEl = null;
         }
 
-        // Short pause (matches the fade-out) before starting new sentence
+        // Short pause (matches fade-out) — must use hadPrevious, NOT currentEl
+        // (currentEl is already null at this point, so '? 200 : 0' was always 0)
         setTimeout(() => {
           const el = document.createElement("span");
           el.className = "sentence " + FONT_CLASS;
@@ -219,7 +226,7 @@
             typeTimer = setTimeout(typeNext, delay);
           }
           typeNext();
-        }, currentEl ? 200 : 0);
+        }, hadPrevious ? 200 : 0);
       }
 
       // ── SSE connection to text stream ──
@@ -233,9 +240,11 @@
         es.onmessage = (ev) => {
           try {
             const d = JSON.parse(ev.data);
-            // Pick only this screen's language field
-            if (d[LANG]) showSentence(d[LANG]);
-            // lang_switch events are ignored — this screen is dedicated to one language
+            // Use ONLY the new-chunk field — never fall back to the full
+            // accumulated field (d[LANG]) which would replay the whole khutba.
+            const text = d["new_" + LANG];
+            if (text && text.trim()) showSentence(text);
+            // lang_switch is ignored — this screen is dedicated to one language
           } catch {}
         };
 
@@ -246,6 +255,27 @@
         };
       }
 
+      // ── Screen WebSocket (for ID display) ──
+      const idCorner = document.getElementById("screen-id-corner");
+      function connectScreenWS() {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        const ws = new WebSocket(`${proto}//${location.host}/ws/screen?page=screen/${LANG}`);
+        ws.onmessage = (ev) => {
+          try {
+            const msg = JSON.parse(ev.data);
+            if (msg.type === "init" && idCorner) {
+              idCorner.textContent = "ID: " + msg.id;
+            }
+            // set_lang is ignored — dedicated single-language screen
+          } catch {}
+        };
+        ws.onclose = () => {
+          if (idCorner) idCorner.textContent = "";
+          setTimeout(connectScreenWS, 4000);
+        };
+      }
+
+      connectScreenWS();
       connectSSE();
     })();
     </script>

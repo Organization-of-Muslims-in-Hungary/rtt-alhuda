@@ -298,10 +298,32 @@ class _NullWebSocket:
 # Exists for the lifetime of the server; no browser tab needed.
 _headless_client: "ClientState | None" = None  # set in on_startup
 
+# ── Screen registry: one entry per connected TV / monitor ──────────────────
+@dataclass
+class ScreenClient:
+    """A connected display screen (TV, monitor, projector)."""
+    screen_id: str               # 4-digit random ID shown on screen
+    ws: web.WebSocketResponse
+    page: str                    # "tv" | "screen" | "screen/ar" | "screen/en" | "screen/hu"
+    lang: Optional[str] = None  # current language filter (None = all)
 
-async def _broadcast_translations(ar: str, en: str, hu: str) -> None:
-    """Push latest translations to all SSE text listeners."""
-    payload = json.dumps({"ar": ar, "en": en, "hu": hu})
+_screen_clients: dict[str, ScreenClient] = {}  # screen_id → ScreenClient
+
+
+async def _broadcast_translations(
+    ar: str, en: str, hu: str,
+    new_ar: str = "", new_en: str = "", new_hu: str = ""
+) -> None:
+    """Push translations to all SSE text listeners.
+
+    ``ar/en/hu`` = full accumulated text (kept for React compatibility).
+    ``new_ar/new_en/new_hu`` = only the latest chunk — display pages use these
+    to avoid the same text re-appearing with every new chunk.
+    """
+    payload = json.dumps({
+        "ar": ar, "en": en, "hu": hu,
+        "new_ar": new_ar, "new_en": new_en, "new_hu": new_hu,
+    })
     dead = set()
     for q in _sse_listeners:
         try:
@@ -667,7 +689,12 @@ async def _process_chunk(
                 full_ar = " ".join(c.transcription for c in client.chunk_history if c.transcription)
                 full_en = " ".join(c.translation for c in client.chunk_history if c.translation)
                 full_hu = " ".join(c.translation_hu for c in client.chunk_history if c.translation_hu)
-            await _broadcast_translations(full_ar, full_en, full_hu)
+            await _broadcast_translations(
+                full_ar, full_en, full_hu,
+                new_ar=new_transcription,
+                new_en=new_translation,
+                new_hu=new_translation_hu,
+            )
 
         message = {
             "type": "transcription",
@@ -1260,6 +1287,65 @@ async def screen_handler(_: web.Request) -> web.StreamResponse:
     return web.FileResponse(screen_path)
 
 
+async def screen_ws_handler(request: web.Request) -> web.WebSocketResponse:
+    """WebSocket for screen registration: assigns a 4-digit ID and relays set_lang commands."""
+    import random
+
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    # Assign a unique 4-digit ID
+    while True:
+        sid = str(random.randint(1000, 9999))
+        if sid not in _screen_clients:
+            break
+
+    page = request.query.get("page", "screen")
+    sc = ScreenClient(screen_id=sid, ws=ws, page=page)
+    _screen_clients[sid] = sc
+
+    # Tell the screen its assigned ID
+    await ws.send_str(json.dumps({"type": "init", "id": sid, "page": page}))
+    log(f"[screen] {sid} connected (page={page})")
+
+    try:
+        async for msg in ws:
+            if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
+    finally:
+        _screen_clients.pop(sid, None)
+        log(f"[screen] {sid} disconnected")
+
+    return ws
+
+
+async def get_screens_handler(_: web.Request) -> web.Response:
+    """Return list of all currently connected display screens."""
+    screens = [
+        {"id": sc.screen_id, "page": sc.page, "lang": sc.lang}
+        for sc in _screen_clients.values()
+    ]
+    return web.json_response(screens)
+
+
+async def set_screen_lang_handler(request: web.Request) -> web.Response:
+    """Set the language filter on a specific screen by ID."""
+    screen_id = request.match_info["screen_id"]
+    lang = request.match_info["lang"]  # "ar" | "en" | "hu" | "all"
+
+    sc = _screen_clients.get(screen_id)
+    if not sc:
+        return web.json_response({"ok": False, "reason": f"Screen {screen_id} not connected"}, status=404)
+
+    sc.lang = None if lang == "all" else lang
+    try:
+        await sc.ws.send_str(json.dumps({"type": "set_lang", "lang": lang}))
+    except Exception as exc:
+        return web.json_response({"ok": False, "reason": str(exc)}, status=500)
+
+    return web.json_response({"ok": True, "id": screen_id, "lang": lang})
+
+
 _SCREEN_CONFIGS: dict[str, dict] = {
     "ar": {
         "dir": "rtl",
@@ -1439,6 +1525,15 @@ def create_app() -> web.Application:
     # Big-screen display (50-inch Samsung TV)
     app.router.add_get("/screen", screen_handler)
     app.router.add_get("/screen/{lang}", screen_single_handler)
+
+    # Screen WebSocket (for ID assignment + per-screen lang control)
+    app.router.add_get("/ws/screen", screen_ws_handler)
+
+    # Screen management API
+    screens_route = app.router.add_get("/api/screens", get_screens_handler)
+    cors.add(screens_route)
+    screen_lang_route = app.router.add_get("/api/screen/{screen_id}/lang/{lang}", set_screen_lang_handler)
+    cors.add(screen_lang_route)
 
     # Static fonts (for screen.html big-screen page)
     fonts_dir = Path(__file__).parent / "static" / "fonts"
