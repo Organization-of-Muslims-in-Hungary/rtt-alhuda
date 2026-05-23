@@ -572,6 +572,23 @@
       };
       // Start with "all" active
       switchLang(null, /*force=*/true);
+
+      // ── Always-on SSE listener for phone-initiated lang_switch ──
+      // The main WebSocket only connects when recording starts, so without this,
+      // the phone cannot change the language filter when idle.
+      (function setupLangSSE() {
+        const es = new EventSource("/stream/text");
+        es.onmessage = (ev) => {
+          try {
+            const d = JSON.parse(ev.data);
+            if (d.lang_switch !== undefined) {
+              window.switchLang(d.lang_switch === "all" ? null : d.lang_switch, /*force=*/true);
+            }
+          } catch {}
+        };
+        es.onerror = () => { es.close(); setTimeout(setupLangSSE, 5000); };
+      })();
+
       const tabNetwork  = document.getElementById("tab-network");
       const playEnBtn   = document.getElementById("play-en-btn");
       const playHuBtn   = document.getElementById("play-hu-btn");

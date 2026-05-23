@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="{{LANG}}" dir="{{DIR}}">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Juma · {{LABEL}}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&family=Tajawal:wght@800&family=Anton&family=Oswald:wght@600;700&display=swap" rel="stylesheet" />
+    <style>
+      /* ── Reset ── */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        width: 100%; height: 100%;
+        background: #000;
+        color: #fff;
+        overflow: hidden;
+      }
+
+      /* ── Lama Sans Condensed Black (drop .otf in static/fonts/) ── */
+      @font-face {
+        font-family: "LamaSans";
+        src: url("/fonts/lama-sans-condensed-black.otf") format("opentype");
+        font-weight: 900;
+        font-style: normal;
+      }
+
+      /* ── Full-screen layout ── */
+      .screen {
+        width: 100vw;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: clamp(24px, 4vw, 80px) clamp(32px, 5vw, 120px);
+      }
+
+      /* ── Text wrapper ── */
+      .text-wrap {
+        width: 100%;
+        text-align: center;
+        position: relative;
+        min-height: 1.4em;
+      }
+
+      /* ── A single displayed sentence ── */
+      .sentence {
+        display: block;
+        font-weight: 900;
+        line-height: 1.3;
+        word-break: keep-all;
+        opacity: 1;
+        transition: opacity 0.35s ease;
+        /* text-shadow for readability on any background */
+        text-shadow: 0 4px 24px rgba(0,0,0,0.8), 0 1px 4px rgba(0,0,0,0.5);
+      }
+
+      /* ── Arabic style ── */
+      .sentence.ar {
+        font-family: "Amiri", "Tajawal", serif;
+        font-size: clamp(52px, 9vw, 180px);
+        direction: rtl;
+        text-align: center;
+        color: #fff8e8;
+        word-spacing: 8px;
+        letter-spacing: 0;
+      }
+
+      /* ── Latin (EN/HU) style ── */
+      .sentence.latin {
+        font-family: "LamaSans", "Anton", "Oswald", sans-serif;
+        font-size: clamp(46px, 8vw, 155px);
+        text-align: center;
+        letter-spacing: 0.01em;
+        text-transform: uppercase;
+        color: #fff;
+      }
+
+      /* ── Fade-out class ── */
+      .sentence.leaving { opacity: 0; }
+
+      /* ── Idle placeholder ── */
+      .placeholder {
+        font-family: "Oswald", sans-serif;
+        font-weight: 400;
+        font-size: clamp(18px, 2.5vw, 48px);
+        color: rgba(255,255,255,0.12);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      /* ── Status dot (top-right corner) ── */
+      .dot {
+        position: fixed;
+        top: clamp(14px, 2vh, 32px);
+        right: clamp(16px, 2vw, 40px);
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: #333;
+        transition: background 0.4s;
+      }
+      .dot.live {
+        background: #22c55e;
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%, 100% { opacity: 0.4; transform: scale(0.75); }
+        50%       { opacity: 1;   transform: scale(1.25); }
+      }
+
+      /* ── Language badge (bottom-right corner) ── */
+      .badge {
+        position: fixed;
+        bottom: clamp(12px, 1.8vh, 28px);
+        right: clamp(16px, 2vw, 40px);
+        font-family: "Oswald", sans-serif;
+        font-weight: 400;
+        font-size: clamp(11px, 1.2vw, 22px);
+        color: rgba(255,255,255,0.18);
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      /* ── Colour accent line (very subtle, at bottom) ── */
+      .accent-line {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        background: {{ACCENT_COLOR}};
+        opacity: 0.6;
+      }
+
+      /* ── Word-in animation ── */
+      @keyframes wordin {
+        from { opacity: 0; transform: translateY(6px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      .word-token {
+        display: inline;
+        animation: wordin 0.18s ease forwards;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="dot"  id="dot"></div>
+    <div class="badge" id="badge">{{LABEL}}</div>
+    <div class="accent-line"></div>
+
+    <div class="screen">
+      <div class="text-wrap" id="text-wrap">
+        <span class="placeholder">{{PLACEHOLDER}}</span>
+      </div>
+    </div>
+
+    <script>
+    (() => {
+      const LANG       = "{{LANG}}";
+      const FONT_CLASS = "{{FONT_CLASS}}";  // "ar" or "latin"
+
+      const wrap = document.getElementById("text-wrap");
+      const dot  = document.getElementById("dot");
+
+      let currentEl   = null;
+      let typeTimer   = null;
+
+      // ── Show a new sentence, replacing the old one ──
+      function showSentence(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return;
+
+        // Split into tokens, keeping whitespace-separated words.
+        // For Arabic, words are separated by spaces; same for Latin.
+        const words = raw.split(/\s+/).filter(Boolean);
+        if (!words.length) return;
+
+        // Remove the static placeholder if still present
+        const ph = wrap.querySelector(".placeholder");
+        if (ph) ph.remove();
+
+        // Cancel in-flight typing
+        if (typeTimer) { clearTimeout(typeTimer); typeTimer = null; }
+
+        // Fade out the old sentence then remove it
+        if (currentEl) {
+          const old = currentEl;
+          old.classList.add("leaving");
+          setTimeout(() => { if (old.parentNode) old.remove(); }, 380);
+          currentEl = null;
+        }
+
+        // Short pause (matches the fade-out) before starting new sentence
+        setTimeout(() => {
+          const el = document.createElement("span");
+          el.className = "sentence " + FONT_CLASS;
+          wrap.appendChild(el);
+          currentEl = el;
+
+          // For Arabic (RTL) we build right-to-left naturally since it's just text
+          let i = 0;
+          const sep = (FONT_CLASS === "ar") ? "\u200c " : " "; // zero-width non-joiner before space in Arabic
+
+          function typeNext() {
+            if (!currentEl || currentEl !== el) return;
+            if (i >= words.length) return;
+
+            // Append word as a span so each has its own fade-in
+            const token = document.createElement("span");
+            token.className = "word-token";
+            token.textContent = (i > 0 ? " " : "") + words[i++];
+            el.appendChild(token);
+
+            // Natural timing: 75-130ms per word (vary slightly for natural feel)
+            const delay = 75 + Math.floor(Math.random() * 55);
+            typeTimer = setTimeout(typeNext, delay);
+          }
+          typeNext();
+        }, currentEl ? 200 : 0);
+      }
+
+      // ── SSE connection to text stream ──
+      function connectSSE() {
+        const es = new EventSource("/stream/text");
+
+        es.onopen = () => {
+          dot.className = "dot live";
+        };
+
+        es.onmessage = (ev) => {
+          try {
+            const d = JSON.parse(ev.data);
+            // Pick only this screen's language field
+            if (d[LANG]) showSentence(d[LANG]);
+            // lang_switch events are ignored — this screen is dedicated to one language
+          } catch {}
+        };
+
+        es.onerror = () => {
+          dot.className = "dot";
+          es.close();
+          setTimeout(connectSSE, 3000);
+        };
+      }
+
+      connectSSE();
+    })();
+    </script>
+  </body>
+</html>

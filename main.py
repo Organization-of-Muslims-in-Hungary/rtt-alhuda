@@ -1120,10 +1120,14 @@ async def control_handler(request: web.Request) -> web.Response:
 _XENV = {"DISPLAY": ":0", "XAUTHORITY": "/home/pi/.Xauthority"}
 
 _BROWSER_PAGES = {
-    "app":      "http://localhost/app",
-    "tv":       "http://localhost/tv",
-    "operator": "http://localhost/",
-    "control":  "http://localhost/control",
+    "app":       "http://localhost/app",
+    "tv":        "http://localhost/tv",
+    "screen":    "http://localhost/screen",
+    "screen-ar": "http://localhost/screen/ar",
+    "screen-en": "http://localhost/screen/en",
+    "screen-hu": "http://localhost/screen/hu",
+    "operator":  "http://localhost/",
+    "control":   "http://localhost/control",
 }
 
 
@@ -1256,6 +1260,55 @@ async def screen_handler(_: web.Request) -> web.StreamResponse:
     return web.FileResponse(screen_path)
 
 
+_SCREEN_CONFIGS: dict[str, dict] = {
+    "ar": {
+        "dir": "rtl",
+        "label": "العربية · Arabic",
+        "placeholder": "في انتظار التلاوة…",
+        "font_class": "ar",
+        "accent_color": "linear-gradient(90deg,#d4a843,#f0c060)",
+    },
+    "en": {
+        "dir": "ltr",
+        "label": "English",
+        "placeholder": "Awaiting translation…",
+        "font_class": "latin",
+        "accent_color": "linear-gradient(90deg,#3b82f6,#60a5fa)",
+    },
+    "hu": {
+        "dir": "ltr",
+        "label": "Magyar",
+        "placeholder": "Fordításra vár…",
+        "font_class": "latin",
+        "accent_color": "linear-gradient(90deg,#a855f7,#c084fc)",
+    },
+}
+
+
+async def screen_single_handler(request: web.Request) -> web.Response:
+    """Serve a single-language fullscreen display page (/screen/ar|en|hu)."""
+    lang = request.match_info.get("lang", "")
+    cfg = _SCREEN_CONFIGS.get(lang)
+    if not cfg:
+        return web.Response(status=404, text=f"Unknown language: {lang}")
+
+    tpl_path = Path(__file__).parent / "templates" / "screen_single.html"
+    if not tpl_path.is_file():
+        return web.Response(status=404, text="screen_single.html not found")
+
+    html = tpl_path.read_text(encoding="utf-8")
+    for placeholder, value in [
+        ("{{LANG}}", lang),
+        ("{{DIR}}", cfg["dir"]),
+        ("{{LABEL}}", cfg["label"]),
+        ("{{PLACEHOLDER}}", cfg["placeholder"]),
+        ("{{FONT_CLASS}}", cfg["font_class"]),
+        ("{{ACCENT_COLOR}}", cfg["accent_color"]),
+    ]:
+        html = html.replace(placeholder, value)
+    return web.Response(text=html, content_type="text/html", charset="utf-8")
+
+
 class AudioStreamTrack(MediaStreamTrack):
     """A MediaStreamTrack that streams edge-tts TTS audio to a WebRTC peer."""
 
@@ -1385,6 +1438,7 @@ def create_app() -> web.Application:
 
     # Big-screen display (50-inch Samsung TV)
     app.router.add_get("/screen", screen_handler)
+    app.router.add_get("/screen/{lang}", screen_single_handler)
 
     # Static fonts (for screen.html big-screen page)
     fonts_dir = Path(__file__).parent / "static" / "fonts"
