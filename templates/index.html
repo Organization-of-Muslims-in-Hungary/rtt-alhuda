@@ -511,13 +511,28 @@
         <div class="sidebar-tabs">
           <button class="tab-btn active" data-tab="logs">Logs</button>
           <button class="tab-btn" data-tab="network">Network</button>
+          <button class="tab-btn" data-tab="remote">Remote</button>
         </div>
         <div class="tab-panel active" id="tab-logs"></div>
         <div class="tab-panel" id="tab-network"></div>
+        <div class="tab-panel" id="tab-remote">
+          <div style="padding:14px;display:flex;flex-direction:column;gap:12px;align-items:center">
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;align-self:flex-start">Phone Control</div>
+            <div id="qr-canvas" style="background:#fff;padding:8px;border-radius:8px;display:flex;align-items:center;justify-content:center"></div>
+            <div style="font-size:12px;color:var(--muted);text-align:center">Scan to open control page on your phone</div>
+            <a id="ctrl-link" href="/control" target="_blank"
+               style="font-size:12px;color:var(--gold);word-break:break-all;text-align:center;text-decoration:none;padding:6px 10px;border:1px solid var(--border);border-radius:6px;width:100%">
+              /control
+            </a>
+            <a href="/control/ar" target="_blank"
+               style="font-size:12px;color:var(--muted);text-decoration:none;padding:4px 10px;border:1px solid var(--border);border-radius:6px;width:100%;text-align:center">
+              /control/ar &nbsp;عربي
+            </a>
+          </div>
+        </div>
       </aside>
     </div>
 
-  </body>
   <script>
     (() => {
       // ── Elements ──
@@ -579,6 +594,31 @@
           document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
         });
       });
+
+      // ── Remote tab: QR code + control URL ──
+      (function() {
+        // Build the control URL using the current host so it always works
+        // regardless of IP — works via khutba-pi.local or any IP on the LAN
+        const controlUrl = location.protocol + "//" + location.host + "/control";
+        const ctrlLink = document.getElementById("ctrl-link");
+        if (ctrlLink) {
+          ctrlLink.href = controlUrl;
+          ctrlLink.textContent = controlUrl;
+        }
+        // Generate QR code as image using Google Charts API (no JS lib needed)
+        const qrContainer = document.getElementById("qr-canvas");
+        if (qrContainer) {
+          const img = document.createElement("img");
+          img.src = "https://chart.googleapis.com/chart?chs=160x160&cht=qr&chl=" + encodeURIComponent(controlUrl) + "&choe=UTF-8";
+          img.alt = "QR Code for " + controlUrl;
+          img.style.cssText = "width:160px;height:160px;display:block;border-radius:4px";
+          img.onerror = () => {
+            // Offline fallback: just show the URL text larger
+            qrContainer.innerHTML = `<div style="font-size:11px;color:#333;word-break:break-all;padding:4px;max-width:160px">${controlUrl}</div>`;
+          };
+          qrContainer.appendChild(img);
+        }
+      })();
 
       // ── Status helpers ──
       function setStatus(label, state) {
@@ -850,4 +890,5 @@
       ensureSocket().catch(() => setStatus("Offline", "error"));
     })();
   </script>
+  </body>
 </html>
