@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="ar">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Juma Live — Big Screen</title>
+
+    <!-- Arabic display font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@700&family=Tajawal:wght@800&display=swap" rel="stylesheet" />
+
+    <style>
+      /* ────────────────────────────────────────────────────────────
+         Lama Sans Condensed Black — place the .otf file at:
+           /home/pi/.local/Juma/Juma/static/fonts/lama-sans-condensed-black.otf
+         The server serves it at /fonts/lama-sans-condensed-black.otf
+         If the file is missing the browser falls back to Oswald/Anton below.
+      ──────────────────────────────────────────────────────────── */
+      @font-face {
+        font-family: "LamaSans";
+        src: url("/fonts/lama-sans-condensed-black.otf") format("opentype");
+        font-weight: 900;
+        font-style: normal;
+        font-display: swap;
+      }
+
+      :root {
+        --bg:         #000000;
+        --ar-color:   #f5e6b8;   /* warm cream — readable on dark */
+        --en-color:   #e8f0ff;   /* cool blue-white */
+        --hu-color:   #f0e8ff;   /* lavender-white */
+        --label-ar:   rgba(212,168,67,.45);
+        --label-en:   rgba(100,180,255,.45);
+        --label-hu:   rgba(200,140,255,.45);
+        --divider:    #1a1a2a;
+        --green:      #22c55e;
+        --muted:      #333355;
+        --dimmed-op:  0.08;
+        --focused-glow-ar: rgba(212,168,67,.12);
+        --focused-glow-en: rgba(59,130,246,.10);
+        --focused-glow-hu: rgba(168,85,247,.10);
+
+        /* Condensed Black font stack — LamaSans first, bold sans fallbacks */
+        --font-latin: "LamaSans", "Oswald", "Anton", "Arial Narrow", sans-serif;
+        --font-ar:    "Tajawal", "Amiri", "LamaSans", serif;
+      }
+
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body {
+        width: 100%; height: 100%;
+        background: var(--bg);
+        overflow: hidden;
+      }
+
+      /* ── Main grid ───────────────────────────────────────────────
+         Row 1: Arabic (top, 52% height)
+         Row 2: English + Hungarian split (bottom, 48%)
+      ──────────────────────────────────────────────────────────── */
+      .screen {
+        display: grid;
+        grid-template-rows: 52fr 48fr;
+        height: 100vh;
+        width: 100vw;
+      }
+
+      /* ── Status ticker (top-right absolute overlay) ── */
+      .ticker {
+        position: fixed;
+        top: 0; right: 0;
+        display: flex; align-items: center; gap: 8px;
+        padding: 7px 16px;
+        background: rgba(0,0,0,.6);
+        border-bottom-left-radius: 10px;
+        z-index: 100;
+      }
+      .status-dot {
+        width: 9px; height: 9px; border-radius: 50%;
+        background: var(--muted); flex-shrink: 0;
+      }
+      .status-dot.live {
+        background: var(--green);
+        animation: pulse 1.8s ease-in-out infinite;
+      }
+      @keyframes pulse {
+        0%,100% { opacity:.4; transform:scale(.75); }
+        50%      { opacity:1;  transform:scale(1.25); }
+      }
+      .audio-bar {
+        display: flex; gap: 2px; align-items: flex-end;
+        height: 14px; opacity: 0; transition: opacity .3s;
+      }
+      .audio-bar.playing { opacity: 1; }
+      .audio-bar span {
+        display: block; width: 3px; background: var(--green);
+        border-radius: 2px;
+      }
+      .audio-bar.playing span:nth-child(1) { animation: bar .8s ease-in-out -.2s infinite; height: 8px; }
+      .audio-bar.playing span:nth-child(2) { animation: bar .8s ease-in-out  .0s infinite; height: 14px; }
+      .audio-bar.playing span:nth-child(3) { animation: bar .8s ease-in-out  .3s infinite; height: 6px; }
+      .audio-bar.playing span:nth-child(4) { animation: bar .8s ease-in-out  .1s infinite; height: 10px; }
+      @keyframes bar {
+        0%,100% { transform:scaleY(.35); } 50% { transform:scaleY(1); }
+      }
+
+      /* ── Panel base ── */
+      .panel {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;  /* vertically center text */
+        align-items: center;      /* horizontally center */
+        padding: 28px 60px;
+        overflow: hidden;
+        transition: opacity .6s ease, background .6s ease;
+      }
+
+      /* ── Arabic panel ── */
+      .panel-ar {
+        border-bottom: 2px solid var(--divider);
+        background: #060608;
+      }
+      .panel-ar.focused  { background: var(--focused-glow-ar); }
+      .panel-ar.dimmed   { opacity: var(--dimmed-op); }
+
+      /* ── Bottom row ── */
+      .panels-bottom {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+      .panel-en {
+        border-right: 2px solid var(--divider);
+        background: #04040a;
+      }
+      .panel-en.focused  { background: var(--focused-glow-en); }
+      .panel-en.dimmed   { opacity: var(--dimmed-op); }
+      .panel-hu {
+        background: #04040a;
+      }
+      .panel-hu.focused  { background: var(--focused-glow-hu); }
+      .panel-hu.dimmed   { opacity: var(--dimmed-op); }
+
+      /* ── Language label (subtle corner badge) ── */
+      .lang-label {
+        position: absolute;
+        top: 14px; left: 22px;
+        font-family: var(--font-latin);
+        font-size: clamp(11px, 1vw, 18px);
+        font-weight: 900;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        opacity: .5;
+        user-select: none;
+      }
+      .panel-ar .lang-label { color: var(--label-ar); right: 22px; left: auto; }
+      .panel-en .lang-label { color: var(--label-en); }
+      .panel-hu .lang-label { color: var(--label-hu); }
+
+      /* ── Text areas ── */
+      .text-area {
+        width: 100%;
+        text-align: center;
+        line-height: 1.25;
+        word-break: break-word;
+        overflow: hidden;
+        /* Single-sentence mode: fixed-height wrapper so old text
+           is fully replaced rather than scrolling */
+      }
+
+      /* Arabic */
+      .ar-area {
+        font-family: var(--font-ar);
+        font-weight: 800;
+        font-size: clamp(38px, 5.8vw, 100px);
+        direction: rtl;
+        text-align: center;
+        color: var(--ar-color);
+        letter-spacing: 0;
+        word-spacing: 6px;
+        line-height: 1.4;
+      }
+
+      /* English / Hungarian */
+      .en-area, .hu-area {
+        font-family: var(--font-latin);
+        font-weight: 900;
+        font-size: clamp(26px, 3.8vw, 70px);
+        text-transform: uppercase;
+        letter-spacing: .01em;
+        line-height: 1.2;
+      }
+      .en-area { color: var(--en-color); }
+      .hu-area { color: var(--hu-color); }
+
+      /* ── Sentence animation ── */
+      /* The current sentence slides up & fades in; old sentence fades out */
+      @keyframes fadeSlideIn {
+        from { opacity: 0; transform: translateY(22px); }
+        to   { opacity: 1; transform: translateY(0); }
+      }
+      @keyframes fadeOut {
+        from { opacity: 1; }
+        to   { opacity: 0; }
+      }
+
+      .sentence {
+        display: block;
+        animation: fadeSlideIn .45s ease forwards;
+      }
+      .sentence.leaving {
+        animation: fadeOut .3s ease forwards;
+        pointer-events: none;
+        position: absolute;
+        width: 90%;
+        left: 5%;
+      }
+
+      /* ── Placeholder ── */
+      .placeholder {
+        color: var(--muted);
+        font-style: italic;
+        font-family: var(--font-latin);
+        font-size: 0.5em;
+        font-weight: 400;
+        text-transform: none;
+        letter-spacing: .05em;
+        opacity: .6;
+      }
+    </style>
+  </head>
+  <body>
+
+    <!-- Status overlay (top-right) -->
+    <div class="ticker">
+      <div class="audio-bar" id="audio-bar"><span></span><span></span><span></span><span></span></div>
+      <div class="status-dot" id="status-dot"></div>
+    </div>
+
+    <div class="screen">
+
+      <!-- Arabic (top, full width) -->
+      <div class="panel panel-ar" id="panel-ar">
+        <span class="lang-label">عربي</span>
+        <div class="text-area ar-area" id="ar-text">
+          <span class="placeholder">في انتظار التلاوة…</span>
+        </div>
+      </div>
+
+      <!-- EN + HU (bottom row) -->
+      <div class="panels-bottom">
+
+        <div class="panel panel-en" id="panel-en">
+          <span class="lang-label">English</span>
+          <div class="text-area en-area" id="en-text">
+            <span class="placeholder">Awaiting translation…</span>
+          </div>
+        </div>
+
+        <div class="panel panel-hu" id="panel-hu">
+          <span class="lang-label">Magyar</span>
+          <div class="text-area hu-area" id="hu-text">
+            <span class="placeholder">Fordításra vár…</span>
+          </div>
+        </div>
+
+      </div>
+    </div><!-- .screen -->
+
+    <script>
+    (() => {
+      "use strict";
+
+      // ─── DOM refs ────────────────────────────────────────────────
+      const arText    = document.getElementById("ar-text");
+      const enText    = document.getElementById("en-text");
+      const huText    = document.getElementById("hu-text");
+      const panelAr   = document.getElementById("panel-ar");
+      const panelEn   = document.getElementById("panel-en");
+      const panelHu   = document.getElementById("panel-hu");
+      const statusDot = document.getElementById("status-dot");
+      const audioBar  = document.getElementById("audio-bar");
+
+      // ─── Audio ───────────────────────────────────────────────────
+      let audioQueues = { en: [], hu: [] };
+      let isPlaying = false;
+
+      function setAudioPlaying(on) {
+        isPlaying = on;
+        audioBar.className = on ? "audio-bar playing" : "audio-bar";
+      }
+
+      function playNextInQueue() {
+        for (const lang of ["en", "hu"]) {
+          if (audioQueues[lang].length > 0) {
+            const b64 = audioQueues[lang].shift();
+            const audio = new Audio("data:audio/mp3;base64," + b64);
+            setAudioPlaying(true);
+            const done = () => { setAudioPlaying(false); playNextInQueue(); };
+            audio.onended = done; audio.onerror = done;
+            audio.play().catch(done);
+            return;
+          }
+        }
+      }
+
+      // ─── Word-by-word typewriter (single sentence) ───────────────
+      // Each container holds ONE sentence at a time.
+      // When new text arrives the old span gets a "leaving" animation,
+      // a new span is appended, and the old is removed when its animation ends.
+
+      const _typingQueues = new Map();   // container → pending words[]
+      const _typingTimers = new Map();   // container → rAF/timeout handle
+
+      function _clearTyping(container) {
+        if (_typingTimers.has(container)) {
+          clearTimeout(_typingTimers.get(container));
+          _typingTimers.delete(container);
+        }
+        _typingQueues.delete(container);
+      }
+
+      function _drip(container) {
+        const words = _typingQueues.get(container);
+        if (!words || !words.length) {
+          _typingTimers.delete(container);
+          return;
+        }
+        const span = container.querySelector(".sentence:not(.leaving)");
+        if (!span) { _typingTimers.delete(container); return; }
+
+        span.textContent += (span.textContent ? " " : "") + words.shift();
+
+        const delay = 80 + Math.random() * 40; // slight variation feels natural
+        _typingTimers.set(container, setTimeout(() => _drip(container), delay));
+      }
+
+      function _showChunk(container, text) {
+        const v = String(text || "").trim();
+        if (!v) return;
+
+        // Stop any in-progress typing
+        _clearTyping(container);
+
+        // Remove placeholder if still there
+        const ph = container.querySelector(".placeholder");
+        if (ph) ph.remove();
+
+        // Animate out the current sentence
+        const old = container.querySelector(".sentence:not(.leaving)");
+        if (old) {
+          old.classList.add("leaving");
+          old.addEventListener("animationend", () => old.remove(), { once: true });
+          // Safety fallback — remove after 500ms regardless
+          setTimeout(() => { if (old.parentNode) old.remove(); }, 500);
+        }
+
+        // Create new sentence span and start typing into it
+        const span = document.createElement("span");
+        span.className = "sentence";
+        container.appendChild(span);
+
+        const words = v.split(/\s+/).filter(Boolean);
+        _typingQueues.set(container, words);
+        _drip(container);
+      }
+
+      // ─── Language filter ─────────────────────────────────────────
+      // lang null/"all" → all panels full opacity
+      // lang "ar"/"en"/"hu" → that panel focused, others dimmed
+      function applyLangFilter(lang) {
+        const all = (lang === null || lang === "all");
+        [
+          { el: panelAr, key: "ar" },
+          { el: panelEn, key: "en" },
+          { el: panelHu, key: "hu" },
+        ].forEach(({ el, key }) => {
+          const isFocus = !all && key === lang;
+          const isDim   = !all && key !== lang;
+          el.classList.toggle("focused", isFocus);
+          el.classList.toggle("dimmed",  isDim);
+        });
+      }
+
+      // ─── SSE: Text ───────────────────────────────────────────────
+      function connectText() {
+        const es = new EventSource("/stream/text");
+        es.onopen = () => { statusDot.className = "status-dot live"; };
+        es.onmessage = (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            if (d.lang_switch !== undefined) {
+              applyLangFilter(d.lang_switch);
+              return;
+            }
+            if (d.ar) _showChunk(arText, d.ar);
+            if (d.en) _showChunk(enText, d.en);
+            if (d.hu) _showChunk(huText, d.hu);
+          } catch {}
+        };
+        es.onerror = () => {
+          statusDot.className = "status-dot";
+          es.close();
+          setTimeout(connectText, 3000);
+        };
+      }
+
+      // ─── SSE: Audio ──────────────────────────────────────────────
+      function connectAudio() {
+        const es = new EventSource("/stream/audio");
+        es.onmessage = (e) => {
+          try {
+            const d = JSON.parse(e.data);
+            if (d.lang && d.audio && audioQueues[d.lang]) {
+              audioQueues[d.lang].push(d.audio);
+              if (!isPlaying) playNextInQueue();
+            }
+          } catch {}
+        };
+        es.onerror = () => { es.close(); setTimeout(connectAudio, 3000); };
+      }
+
+      connectText();
+      connectAudio();
+    })();
+    </script>
+  </body>
+</html>

@@ -1024,21 +1024,12 @@ async def sse_text_handler(request: web.Request) -> web.StreamResponse:
     log(f"SSE client connected (total: {len(_sse_listeners)})")
     try:
         while True:
-            payload = await asyncio.wait_for(queue.get(), timeout=25)
-            await response.write(f"data: {payload}\n\n".encode())
-    except asyncio.TimeoutError:
-        # Send a keepalive comment to prevent browser timeout
-        try:
-            await response.write(b": keepalive\n\n")
-        except Exception:
-            pass
-        # Re-enter the loop — handled by finally if client disconnected
-        try:
-            while True:
-                payload = await asyncio.wait_for(queue.get(), timeout=25)
+            try:
+                payload = await asyncio.wait_for(queue.get(), timeout=20)
                 await response.write(f"data: {payload}\n\n".encode())
-        except (asyncio.TimeoutError, ConnectionResetError, Exception):
-            pass
+            except asyncio.TimeoutError:
+                # Send SSE comment keepalive every 20 s to prevent proxy/browser timeout
+                await response.write(b": keepalive\n\n")
     except (ConnectionResetError, Exception):
         pass
     finally:
@@ -1257,6 +1248,14 @@ async def control_page_ar_handler(_: web.Request) -> web.StreamResponse:
     return web.FileResponse(ctrl_path)
 
 
+async def screen_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the big-screen display page (Samsung TV / 50-inch monitor)."""
+    screen_path = Path(__file__).parent / "templates" / "screen.html"
+    if not screen_path.is_file():
+        return web.Response(status=404, text="screen.html not found")
+    return web.FileResponse(screen_path)
+
+
 class AudioStreamTrack(MediaStreamTrack):
     """A MediaStreamTrack that streams edge-tts TTS audio to a WebRTC peer."""
 
@@ -1383,6 +1382,14 @@ def create_app() -> web.Application:
 
     # TV display page
     app.router.add_get("/tv", tv_handler)
+
+    # Big-screen display (50-inch Samsung TV)
+    app.router.add_get("/screen", screen_handler)
+
+    # Static fonts (for screen.html big-screen page)
+    fonts_dir = Path(__file__).parent / "static" / "fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    app.router.add_static("/fonts", fonts_dir, show_index=False)
 
     # Phone remote control page + API
     app.router.add_get("/control", control_page_handler)
