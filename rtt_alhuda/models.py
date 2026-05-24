@@ -7,6 +7,10 @@ from typing import Optional
 from aiohttp import web
 
 
+def _tts_satellite_sets() -> dict[str, set[web.WebSocketResponse]]:
+    return {"en": set(), "hu": set()}
+
+
 @dataclass
 class ChunkInfo:
     """Stores exact sample boundaries and results for a transcribed audio chunk."""
@@ -40,3 +44,13 @@ class ClientState:
     ws_tts_subscribed: bool = False
     mic_sender_task: Optional[asyncio.Task] = None
     tts_sender_task: Optional[asyncio.Task] = None
+    # Per-language TTS for GET /stream/tts/{en|hu} (MP3). ``ar`` uses original PCM below.
+    tts_queues: Optional[dict[str, asyncio.Queue[bytes]]] = None
+    tts_fanout_tasks: Optional[dict[str, asyncio.Task]] = None
+    tts_satellites: dict[str, set[web.WebSocketResponse]] = field(
+        default_factory=_tts_satellite_sets,
+    )
+    # Live mic PCM for GET /stream/tts/ar (original speech; not TTS).
+    original_pcm_queue: Optional[asyncio.Queue[bytes]] = None
+    original_fanout_task: Optional[asyncio.Task] = None
+    original_audio_satellites: set[web.WebSocketResponse] = field(default_factory=set)

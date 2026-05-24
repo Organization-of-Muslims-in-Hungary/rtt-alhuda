@@ -18,7 +18,7 @@ Create a `.env` file with:
 ```env
 OPENROUTER_API_KEY=your_key_here
 OPENROUTER_MODEL=google/gemini-3.1-flash-lite-preview
-# Optional TTS (English/Hungarian use different OpenRouter `voice` IDs):
+# Optional TTS (per-language OpenRouter `voice` IDs):
 # OPENROUTER_TTS_VOICE_EN=alloy
 # OPENROUTER_TTS_VOICE_HU=alloy
 # OPENROUTER_TTS_RESPONSE_FORMAT=mp3
@@ -41,13 +41,12 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 - The browser UI in [templates/index.html](templates/index.html) opens a WebSocket to [main.py](main.py).
 - The server keeps per-session audio state, captures microphone input, and processes a rolling chunk every few seconds with a small overlap for context.
 - Each chunk is sent to OpenRouter with the prior transcription and translation tail, then the returned text is appended back into the live UI.
-- **TTS:** After each non-empty **English translation** segment, the server calls OpenRouter TTS (`openai/gpt-4o-mini-tts-2025-12-15` by default) and streams MP3 audio to the browser over the WebSocket.
-- **Audio streaming:** The browser can subscribe to two independent audio streams over the same WebSocket connection using binary frames:
+- **TTS:** After each chunk, OpenRouter TTS runs **only for languages that have listeners**: legacy `{"type":"subscribe","stream":"tts"}` on `/stream`, and/or satellite sockets `GET /stream/tts/en` and `GET /stream/tts/hu` (prefixed MP3 with `0x02`). **`GET /stream/tts/ar`** streams the **original captured microphone** (same 16 kHz mono PCM as `/stream` mic, prefix `0x01`) — not Arabic text-to-speech.
+- **Audio streaming:** Binary frames on `/stream`:
   - **Server microphone** — raw PCM (16-bit, 16 kHz, mono), prefix `0x01`
-  - **TTS output** — MP3 segments, prefix `0x02`
-  - Toggle via JSON messages: `{"type": "subscribe", "stream": "mic"}` / `{"type": "unsubscribe", "stream": "tts"}`
+  - **TTS output** (legacy same socket) — MP3, prefix `0x02`, only if subscribed to `tts`
 
-Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message to pick the TTS voice mapping (`OPENROUTER_TTS_VOICE_EN` / `OPENROUTER_TTS_VOICE_HU`).
+Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message for **legacy** primary-socket TTS text selection when using `subscribe` + `tts`.
 
 ## Files
 

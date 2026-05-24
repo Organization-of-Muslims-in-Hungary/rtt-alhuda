@@ -12,6 +12,7 @@ def test_create_app_registers_stream_route() -> None:
     }
     assert "/stream" in get_paths
     assert "/stream/text" in get_paths
+    assert "/stream/tts/{lang}" in get_paths
 
 
 def test_create_app_has_no_webrtc_routes() -> None:

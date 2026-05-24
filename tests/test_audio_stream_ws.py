@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from rtt_alhuda.audio_stream_ws import mic_ws_sender, tts_ws_sender
+from rtt_alhuda.audio_stream_ws import (
+    mic_original_fanout_loop,
+    mic_ws_sender,
+    tts_fanout_loop,
+    tts_ws_sender,
+)
 
 
 def _make_client(*, mic_subscribed: bool = True, tts_subscribed: bool = True):
@@ -105,6 +110,54 @@ async def test_tts_sender_discards_when_unsubscribed():
 
     assert call_count == 1
     client.ws.send_bytes.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tts_fanout_sends_prefixed_mp3_to_satellite():
+    sat = AsyncMock()
+    sat.closed = False
+    client = MagicMock()
+    client.recording = True
+    q = asyncio.Queue()
+    client.tts_queues = {"en": q}
+    client.tts_satellites = {"en": {sat}}
+    client.lock = asyncio.Lock()
+    mp3 = b"\xff\xfb\x90" + b"\x00" * 20
+
+    async def stop_later():
+        await q.put(mp3)
+        await asyncio.sleep(0.05)
+        client.recording = False
+
+    await asyncio.gather(tts_fanout_loop(client, "en"), stop_later())
+    sat.send_bytes.assert_called_once()
+    sent = sat.send_bytes.call_args[0][0]
+    assert sent[0:1] == b"\x02"
+    assert sent[1:] == mp3
+
+
+@pytest.mark.asyncio
+async def test_mic_original_fanout_sends_prefixed_pcm_to_satellite():
+    sat = AsyncMock()
+    sat.closed = False
+    client = MagicMock()
+    client.recording = True
+    q = asyncio.Queue()
+    client.original_pcm_queue = q
+    client.original_audio_satellites = {sat}
+    client.lock = asyncio.Lock()
+    pcm = b"\x00\x01" * 160
+
+    async def stop_later():
+        await q.put(pcm)
+        await asyncio.sleep(0.05)
+        client.recording = False
+
+    await asyncio.gather(mic_original_fanout_loop(client), stop_later())
+    sat.send_bytes.assert_called_once()
+    sent = sat.send_bytes.call_args[0][0]
+    assert sent[0:1] == b"\x01"
+    assert sent[1:] == pcm
 
 
 @pytest.mark.asyncio

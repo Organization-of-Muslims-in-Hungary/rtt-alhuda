@@ -24,7 +24,7 @@ from rtt_alhuda.web_protocol import send_log, send_transcription
 
 
 async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> None:
-    """Fetch TTS audio and push one blob onto the TTS audio queue."""
+    """Fetch TTS audio and push one blob onto the legacy primary TTS queue."""
 
     q = client.media_tts_queue
     if q is None:
@@ -37,6 +37,30 @@ async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> N
     except Exception as exc:
         if not client.ws.closed:
             await send_log(client, f"TTS error: {exc}", "error")
+
+
+async def _enqueue_tts_for_lang(
+    client: ClientState,
+    http: ClientSession,
+    text: str,
+    lang: str,
+) -> None:
+    """Synth one chunk for satellite ``lang`` queue (en | hu)."""
+
+    queues = client.tts_queues
+    if not queues or lang not in queues:
+        return
+    q = queues[lang]
+    try:
+        voice_lang: TtsLanguage = "hu" if lang == "hu" else "en"
+        audio_bytes, _ = await synthesize_speech_bytes(
+            http, text=text, language=voice_lang
+        )
+        if audio_bytes:
+            await q.put(audio_bytes)
+    except Exception as exc:
+        if not client.ws.closed:
+            await send_log(client, f"TTS ({lang}) error: {exc}", "error")
 
 
 async def _process_chunk(
@@ -93,17 +117,40 @@ async def _process_chunk(
         }
         await send_transcription(client, message)
 
-        # TTS: use English or Hungarian translation based on client setting
-        tts_text = ""
-        if client.media_tts_language == "hu" and new_hu.strip():
-            tts_text = new_hu.strip()
-        elif new_en.strip():
-            tts_text = new_en.strip()
+        langs_content = {
+            "ar": new_ar.strip(),
+            "en": new_en.strip(),
+            "hu": new_hu.strip(),
+        }
 
-        if tts_text and client.media_tts_queue is not None:
+        # Legacy primary /stream: one TTS stream from dropdown (en | hu)
+        tts_text = ""
+        if client.media_tts_language == "hu":
+            tts_text = langs_content["hu"]
+        else:
+            tts_text = langs_content["en"]
+
+        if (
+            tts_text
+            and client.media_tts_queue is not None
+            and client.ws_tts_subscribed
+        ):
             asyncio.create_task(
                 _enqueue_tts(client, http, tts_text),
                 name="tts-enqueue",
+            )
+
+        async with client.lock:
+            satellite_langs = [
+                lang
+                for lang in ("en", "hu")
+                if langs_content.get(lang)
+                and len(client.tts_satellites.get(lang, ())) > 0
+            ]
+        for lang in satellite_langs:
+            asyncio.create_task(
+                _enqueue_tts_for_lang(client, http, langs_content[lang], lang),
+                name=f"tts-satellite-{lang}",
             )
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
