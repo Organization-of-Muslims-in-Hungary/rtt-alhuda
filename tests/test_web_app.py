@@ -11,6 +11,7 @@ def test_create_app_registers_stream_route() -> None:
         if getattr(r, "method", None) == "GET"
     }
     assert "/stream" in get_paths
+    assert "/stream/text" in get_paths
 
 
 def test_create_app_has_no_webrtc_routes() -> None:
@@ -22,3 +23,4 @@ def test_create_app_has_no_webrtc_routes() -> None:
     assert "/webrtc/input" not in all_paths
     assert "/webrtc/tts" not in all_paths
     assert "/webrtc-test.html" not in all_paths
+
