@@ -150,7 +150,7 @@ async def synthesize_openrouter_tts(text: str, voice: str, http: ClientSession) 
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:5175",
+            "HTTP-Referer": "http://localhost:5173",
             "X-Title": "rtt-alhuda",
         }
         try:
@@ -561,7 +561,7 @@ async def send_chunk_to_openrouter(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": ["http://localhost:5175", "http://localhost:5173"],
+        "HTTP-Referer": "http://localhost:5173",
     }
     async with http.post(
         OPENROUTER_API_URL,
