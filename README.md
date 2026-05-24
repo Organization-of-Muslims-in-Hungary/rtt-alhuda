@@ -80,6 +80,11 @@ Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message 
 ## Files
 
 - [main.py](main.py) — process entry
+- [fly.toml](fly.toml) — Fly.io (2 shared CPUs, 512 MB, port 8080)
+- [Dockerfile](Dockerfile) — container image for Fly / Cloud Run / Railway
 - [rtt_alhuda/](rtt_alhuda/) — application package (`web_app`, `audio_*`, `tts_openrouter`, …)
 - [templates/index.html](templates/index.html)
 - [requirements.txt](requirements.txt)
+- [docs/deploy-cloudflare.md](../docs/deploy-cloudflare.md) — Pages + Tunnel
+- [docs/deploy-backend-free-hosts.md](../docs/deploy-backend-free-hosts.md) — free hosts + mic caveat
+- [docs/deploy-fly-io.md](../docs/deploy-fly-io.md) — Fly deploy steps

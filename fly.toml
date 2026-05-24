@@ -1,0 +1,46 @@
+# Fly.io — https://fly.io/docs/reference/configuration/
+#
+# 1) Create the app (once):  fly apps create YOUR_APP_NAME
+# 2) Set this file's `app =` to that name (or run `fly launch` and merge).
+# 3) Secrets:  fly secrets set OPENROUTER_API_KEY=sk-or-v1-...
+# 4) Deploy:    fly deploy
+#
+# Frontend (Cloudflare Pages): VITE_BACKEND_ORIGIN=https://YOUR_APP_NAME.fly.dev
+
+app = "rtt-alhuda"
+primary_region = "iad" # e.g. ams, fra, lhr for EU — https://fly.io/docs/reference/regions/
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RTT_ALHUDA_LISTEN_HOST = "0.0.0.0"
+  RTT_ALHUDA_LISTEN_PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 50
+    hard_limit = 80
+
+  # Long-lived WebSocket/SSE — Fly caps idle_timeout at 900s (15m). Reconnect client if longer khutba.
+  [http_service.http_options]
+    idle_timeout = 900
+
+[[http_service.checks]]
+  grace_period = "60s"
+  interval = "30s"
+  method = "GET"
+  timeout = "15s"
+  path = "/"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 2
+  memory = "512mb"
