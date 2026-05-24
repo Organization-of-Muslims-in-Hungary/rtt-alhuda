@@ -65,6 +65,12 @@ async def capture_microphone_loop(client: ClientState) -> None:
                         mic_q.put_nowait(pcm_bytes)
                     except asyncio.QueueFull:
                         pass
+                orig_q = client.original_pcm_queue
+                if orig_q is not None:
+                    try:
+                        orig_q.put_nowait(pcm_bytes)
+                    except asyncio.QueueFull:
+                        pass
     except Exception as exc:
         await send_log(client, f"Microphone error: {exc}", "error")
         client.recording = False

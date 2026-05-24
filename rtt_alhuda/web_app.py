@@ -5,13 +5,20 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 from aiohttp import ClientSession, WSMsgType, web
 
 from rtt_alhuda.audio_capture import capture_microphone_loop
 from rtt_alhuda.audio_processor import process_audio_loop
-from rtt_alhuda.audio_stream_ws import mic_ws_sender, tts_ws_sender
+from rtt_alhuda.audio_stream_ws import (
+    mic_original_fanout_loop,
+    mic_ws_sender,
+    tts_fanout_loop,
+    tts_ws_sender,
+)
 from rtt_alhuda.config import REPO_ROOT
+from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ClientState
 from rtt_alhuda.web_protocol import send_log
 from rtt_alhuda.openrouter_debug import log_startup_summary
@@ -33,6 +40,37 @@ async def stop_recording(client: ClientState) -> None:
     """Stop the active recording and cancel background tasks for the client."""
 
     client.recording = False
+
+    if client.tts_fanout_tasks:
+        for t in list(client.tts_fanout_tasks.values()):
+            if t and not t.done():
+                t.cancel()
+        await asyncio.gather(
+            *client.tts_fanout_tasks.values(),
+            return_exceptions=True,
+        )
+        client.tts_fanout_tasks = None
+    client.tts_queues = None
+
+    if client.original_fanout_task and not client.original_fanout_task.done():
+        client.original_fanout_task.cancel()
+        await asyncio.gather(
+            client.original_fanout_task,
+            return_exceptions=True,
+        )
+    client.original_fanout_task = None
+    client.original_pcm_queue = None
+
+    async with client.lock:
+        for _lang, socks in list(client.tts_satellites.items()):
+            for sat_ws in list(socks):
+                if not sat_ws.closed:
+                    await sat_ws.close(code=1001)
+            socks.clear()
+        for sat_ws in list(client.original_audio_satellites):
+            if not sat_ws.closed:
+                await sat_ws.close(code=1001)
+        client.original_audio_satellites.clear()
 
     tasks = [
         task
@@ -77,6 +115,22 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
 
     client.media_mic_queue = asyncio.Queue(maxsize=50)
     client.media_tts_queue = asyncio.Queue(maxsize=8)
+    client.original_pcm_queue = asyncio.Queue(maxsize=50)
+    client.original_fanout_task = asyncio.create_task(
+        mic_original_fanout_loop(client),
+        name="mic-original-fanout",
+    )
+    client.tts_queues = {
+        "en": asyncio.Queue(maxsize=8),
+        "hu": asyncio.Queue(maxsize=8),
+    }
+    client.tts_fanout_tasks = {
+        lang: asyncio.create_task(
+            tts_fanout_loop(client, lang),
+            name=f"tts-fanout-{lang}",
+        )
+        for lang in ("en", "hu")
+    }
 
     client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
     client.processor_task = asyncio.create_task(process_audio_loop(client, http))
@@ -145,6 +199,57 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         log("WebSocket client disconnected")
 
     return ws
+
+
+async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
+    """WebSocket: ``en``/``hu`` → MP3 (0x02). ``ar`` → live mic PCM (0x01), not TTS."""
+
+    lang = (request.match_info.get("lang") or "").lower()
+    if lang not in ("ar", "en", "hu"):
+        raise web.HTTPBadRequest(text="lang must be ar, en, or hu")
+
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+
+    async def wait_active_primary() -> Optional[ClientState]:
+        while not ws.closed:
+            primary: Optional[ClientState] = request.app.get("last_ws_client")
+            if primary is None or not primary.recording:
+                await asyncio.sleep(0.2)
+                continue
+            if lang == "ar":
+                return primary
+            if primary.tts_queues is not None:
+                return primary
+            await asyncio.sleep(0.2)
+        return None
+
+    primary = await wait_active_primary()
+    if primary is None or ws.closed:
+        if not ws.closed:
+            await ws.close()
+        return ws
+
+    async with primary.lock:
+        if lang == "ar":
+            primary.original_audio_satellites.add(ws)
+        else:
+            primary.tts_satellites[lang].add(ws)
+
+    try:
+        async for msg in ws:
+            if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
+                break
+    finally:
+        async with primary.lock:
+            if lang == "ar":
+                primary.original_audio_satellites.discard(ws)
+            else:
+                primary.tts_satellites[lang].discard(ws)
+        if not ws.closed:
+            await ws.close()
+    return ws
+
 
 async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     """Serve transcription and translation updates via Server-Sent Events (SSE)."""
@@ -399,13 +504,21 @@ async def server_control_handler(request: web.Request) -> web.Response:
     )
 
 
+async def lan_ipv4_handler(_request: web.Request) -> web.Response:
+    """JSON for dev QR codes: ``{"ipv4": "<addr>" | null}`` — same-LAN as this server."""
+
+    return web.json_response({"ipv4": detect_lan_ipv4()})
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
     app = web.Application()
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
+    app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/stream", ws_handler)
+    app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
     app.router.add_get("/stream/text", text_stream_handler) # Add this line
     # Control dashboard (English + Arabic)
     app.router.add_get("/control", control_page_handler)

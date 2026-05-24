@@ -375,8 +375,9 @@
         <button class="btn-start" id="start-btn">Start Recording</button>
         <button class="btn-stop" id="stop-btn" disabled>Stop Recording</button>
         <select id="tts-lang-select">
-          <option value="en">English</option>
-          <option value="hu">Hungarian</option>
+          <option value="en">English (TTS)</option>
+          <option value="hu">Hungarian (TTS)</option>
+          <option value="ar">Arabic (live mic)</option>
         </select>
         <button id="mic-audio-btn" disabled>Hear Mic</button>
         <button id="tts-audio-btn" disabled>Hear TTS</button>
@@ -421,6 +422,7 @@
       const MAX_DEBUG_ENTRIES = 50;
 
       let ws = null;
+      let ttsSatWs = null;
       let requestedRecording = false;
       let audioCtx = null;
       let micGain = null;
@@ -481,7 +483,39 @@
         });
       }
 
+      function closeTtsSatellite() {
+        if (ttsSatWs) {
+          try {
+            ttsSatWs.close();
+          } catch (e) {
+            /* ignore */
+          }
+          ttsSatWs = null;
+        }
+      }
+
+      function openTtsSatellite(lang) {
+        closeTtsSatellite();
+        const langNorm = lang === "hu" ? "hu" : lang === "ar" ? "ar" : "en";
+        const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+        const url = `${wsProtocol}//${window.location.host}/stream/tts/${langNorm}`;
+        ttsSatWs = new WebSocket(url);
+        ttsSatWs.binaryType = "arraybuffer";
+        ttsSatWs.onmessage = (event) => {
+          if (!(event.data instanceof ArrayBuffer)) return;
+          ensureAudioContext();
+          const view = new Uint8Array(event.data);
+          if (view.length < 2) return;
+          if (view[0] === 0x01) handleMicAudio(view.subarray(1));
+          else if (view[0] === 0x02) handleTtsAudio(view.subarray(1));
+        };
+        ttsSatWs.onerror = () => {
+          appendServerLog("TTS satellite WebSocket error");
+        };
+      }
+
       function resetAudioState() {
+        closeTtsSatellite();
         micNextTime = 0;
         ttsNextTime = 0;
         micSubscribed = false;
@@ -763,7 +797,8 @@
           requestedRecording = true;
           const socket = await ensureSocket();
           const ttsLang = document.getElementById("tts-lang-select").value;
-          socket.send(JSON.stringify({ type: "start", ttsLanguage: ttsLang }));
+          const startTtsLang = ttsLang === "ar" ? "en" : ttsLang;
+          socket.send(JSON.stringify({ type: "start", ttsLanguage: startTtsLang }));
           updateUiForRecording(true);
         } catch (err) {
           log("start error: " + (err?.message || err));
@@ -805,11 +840,12 @@
         ttsSubscribed = !ttsSubscribed;
         const btn = document.getElementById("tts-audio-btn");
         if (ttsSubscribed) {
-          ws.send(JSON.stringify({ type: "subscribe", stream: "tts" }));
+          const lang = document.getElementById("tts-lang-select").value;
+          openTtsSatellite(lang);
           btn.classList.add("btn-audio-active");
           btn.textContent = "Mute TTS";
         } else {
-          ws.send(JSON.stringify({ type: "unsubscribe", stream: "tts" }));
+          closeTtsSatellite();
           btn.classList.remove("btn-audio-active");
           btn.textContent = "Hear TTS";
           ttsNextTime = 0;
