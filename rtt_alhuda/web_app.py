@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -234,6 +235,170 @@ async def on_cleanup(app: web.Application) -> None:
     await http.close()
 
 
+async def control_page_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the English phone control page."""
+    return _template_response("control.html")
+
+
+async def control_ar_page_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the Arabic phone control page."""
+    return _template_response("control_ar.html")
+
+
+# ── Pi-specific control helpers ───────────────────────────────────────────────
+
+_XENV = {"DISPLAY": ":0", "XAUTHORITY": "/home/pi/.Xauthority"}
+
+_BROWSER_PAGES = {
+    "app":      "http://localhost/app",
+    "tv":       "http://localhost/tv",
+    "operator": "http://localhost/",
+    "control":  "http://localhost/control",
+}
+
+
+async def _run(cmd: str) -> tuple[int, str]:
+    """Run a shell command asynchronously; return (returncode, combined output)."""
+    proc = await asyncio.create_subprocess_shell(
+        cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **_XENV},
+    )
+    out, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    return proc.returncode, (out or b"").decode(errors="replace").strip()
+
+
+async def control_handler(request: web.Request) -> web.Response:
+    """Phone-friendly REST API for remote start/stop/status of recording."""
+    action = request.match_info.get("action", "status")
+    client: ClientState | None = request.app.get("last_ws_client")
+
+    if action == "status":
+        recording = bool(client and client.recording)
+        return web.json_response({
+            "recording": recording,
+            "connected": client is not None,
+        })
+
+    if action == "start":
+        if client is None:
+            return web.json_response({"ok": False, "reason": "no_client_connected"})
+        if client.recording:
+            return web.json_response({"ok": False, "reason": "already_recording"})
+        http: ClientSession = request.app["http_client"]
+        await start_recording(client, http)
+        return web.json_response({"ok": True, "action": "started"})
+
+    if action == "stop":
+        if client is None:
+            return web.json_response({"ok": False, "reason": "no_client_connected"})
+        if not client.recording:
+            return web.json_response({"ok": False, "reason": "not_recording"})
+        await stop_recording(client)
+        return web.json_response({"ok": True, "action": "stopped"})
+
+    return web.json_response({"ok": False, "reason": "unknown_action"}, status=400)
+
+
+async def browser_handler(request: web.Request) -> web.Response:
+    """Control the Chromium kiosk browser from the phone.
+
+    Actions:
+      navigate/<page>  — open a named page  (app | tv | operator | control)
+      exit-kiosk       — reopen without --kiosk flag (windowed, escapable)
+      kiosk            — reopen in kiosk/fullscreen mode
+      refresh          — reload current page via xdotool Ctrl+R
+      close            — kill the browser
+      language/<lang>  — broadcast lang_switch to the active WebSocket client
+    """
+    action = request.match_info.get("action", "")
+    browser_bin = (
+        "chromium-browser"
+        if Path("/usr/bin/chromium-browser").exists()
+        else "chromium"
+    )
+
+    if action.startswith("navigate/"):
+        page_key = action.split("/", 1)[1]
+        url = _BROWSER_PAGES.get(page_key)
+        if not url:
+            return web.json_response(
+                {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
+            )
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
+            f"--no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": f"navigate:{url}"})
+
+    if action == "exit-kiosk":
+        url = _BROWSER_PAGES["app"]
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --start-maximized --noerrdialogs --no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": "exit-kiosk"})
+
+    if action == "kiosk":
+        url = _BROWSER_PAGES["app"]
+        await _run("pkill -f chromium 2>/dev/null; sleep 1")
+        await _run(
+            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
+            f"--no-first-run '{url}' &"
+        )
+        return web.json_response({"ok": True, "action": "kiosk"})
+
+    if action == "refresh":
+        rc, out = await _run(
+            "xdotool search --onlyvisible --class chromium "
+            "key --clearmodifiers ctrl+r"
+        )
+        return web.json_response({"ok": rc == 0, "action": "refresh", "detail": out})
+
+    if action == "close":
+        await _run("pkill -f chromium 2>/dev/null")
+        return web.json_response({"ok": True, "action": "close"})
+
+    if action.startswith("language/"):
+        lang = action.split("/", 1)[1]
+        client: ClientState | None = request.app.get("last_ws_client")
+        if client and not client.ws.closed:
+            await client.ws.send_str(json.dumps({"type": "lang_switch", "lang": lang}))
+        return web.json_response({"ok": True, "lang": lang})
+
+    return web.json_response(
+        {"ok": False, "reason": "unknown browser action"}, status=400
+    )
+
+
+async def server_control_handler(request: web.Request) -> web.Response:
+    """Restart or get the status of the juma systemd service."""
+    action = request.match_info.get("action", "")
+
+    if action == "restart":
+        log("[server] restart requested via phone control")
+        asyncio.get_event_loop().call_later(
+            1.0,
+            lambda: asyncio.ensure_future(_run("systemctl restart juma.service")),
+        )
+        return web.json_response(
+            {"ok": True, "action": "restart", "note": "restarting in 1s"}
+        )
+
+    if action == "status":
+        rc, out = await _run("systemctl is-active juma.service")
+        return web.json_response({"ok": True, "active": rc == 0, "state": out})
+
+    return web.json_response(
+        {"ok": False, "reason": "unknown server action"}, status=400
+    )
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
@@ -242,6 +407,14 @@ def create_app() -> web.Application:
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/stream", ws_handler)
     app.router.add_get("/stream/text", text_stream_handler) # Add this line
+    # Control dashboard (English + Arabic)
+    app.router.add_get("/control", control_page_handler)
+    app.router.add_get("/control_ar", control_ar_page_handler)
+    # Control REST API
+    app.router.add_get("/api/control/{action}", control_handler)
+    app.router.add_get("/api/browser/{action:.*}", browser_handler)
+    app.router.add_get("/api/server/{action}", server_control_handler)
+
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
