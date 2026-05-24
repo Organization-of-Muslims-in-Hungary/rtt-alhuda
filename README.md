@@ -26,7 +26,10 @@ OPENROUTER_MODEL=google/gemini-3.1-flash-lite-preview
 python main.py
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+Open `http://127.0.0.1/` for the backend. If your React frontend is running in development, use `http://localhost:5175/`.
+
+
+If your React dev server is on `http://localhost:5175`, the backend request will go to `http://localhost/webrtc/offer`.
 
 ## Architecture
 

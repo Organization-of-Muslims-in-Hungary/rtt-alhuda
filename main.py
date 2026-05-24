@@ -150,7 +150,7 @@ async def synthesize_openrouter_tts(text: str, voice: str, http: ClientSession) 
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
+            "HTTP-Referer": "http://localhost:5175",
             "X-Title": "rtt-alhuda",
         }
         try:
@@ -561,10 +561,8 @@ async def send_chunk_to_openrouter(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000",
-        "X-Title": "rtt-alhuda-node",
+        "HTTP-Referer": ["http://localhost:5175", "http://localhost:5173"],
     }
-
     async with http.post(
         OPENROUTER_API_URL,
         json=body,
@@ -1497,13 +1495,22 @@ def create_app() -> web.Application:
     app = web.Application()
 
     # --- CORS (required for React frontend on any origin) ---
+    cors_options = aiohttp_cors.ResourceOptions(
+        allow_credentials=False,
+        expose_headers="*",
+        allow_headers="*",
+        allow_methods=["GET", "POST", "OPTIONS"],
+    )
     cors = aiohttp_cors.setup(app, defaults={
-        "*": aiohttp_cors.ResourceOptions(
-            allow_credentials=False,
-            expose_headers="*",
-            allow_headers="*",
-            allow_methods=["GET", "POST", "OPTIONS"],
-        )
+        "http://localhost:5175": cors_options,
+        "http://localhost:5173": cors_options,
+
+        "http://127.0.0.1:5175": cors_options,
+        "http://127.0.0.1:5173": cors_options,
+
+        "http://localhost:3000": cors_options,
+        "http://127.0.0.1:3000": cors_options,
+        "*": cors_options,
     })
 
     # Legacy aiohttp WebSocket UI (kept working)
