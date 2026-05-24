@@ -13,8 +13,9 @@ class ChunkInfo:
 
     start_sample: int
     end_sample: int
-    transcription: str
-    translation: str
+    ar: str
+    en: str
+    hu: str
 
 
 @dataclass
