@@ -34,6 +34,8 @@ class ClientState:
     recorder_task: Optional[asyncio.Task] = None
     processor_task: Optional[asyncio.Task] = None
     recording: bool = False
+    # True: PCM arrives as WebSocket binary from the browser (no server mic).
+    use_client_microphone: bool = False
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_chunk_end_sample: int = 0
     # Audio stream taps (created when recording starts).

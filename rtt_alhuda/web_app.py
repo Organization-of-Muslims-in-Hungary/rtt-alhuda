@@ -9,7 +9,7 @@ from typing import Optional
 
 from aiohttp import ClientSession, WSMsgType, web
 
-from rtt_alhuda.audio_capture import capture_microphone_loop
+from rtt_alhuda.audio_capture import capture_microphone_loop, ingest_pcm_bytes
 from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.audio_stream_ws import (
     mic_original_fanout_loop,
@@ -40,6 +40,7 @@ async def stop_recording(client: ClientState) -> None:
     """Stop the active recording and cancel background tasks for the client."""
 
     client.recording = False
+    client.use_client_microphone = False
 
     if client.tts_fanout_tasks:
         for t in list(client.tts_fanout_tasks.values()):
@@ -132,7 +133,14 @@ async def start_recording(client: ClientState, http: ClientSession) -> None:
         for lang in ("en", "hu")
     }
 
-    client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
+    if client.use_client_microphone:
+        client.recorder_task = None
+        await send_log(
+            client,
+            "Browser microphone mode: send raw int16 mono 16 kHz little-endian PCM as WebSocket binary frames.",
+        )
+    else:
+        client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
     client.processor_task = asyncio.create_task(process_audio_loop(client, http))
     client.mic_sender_task = asyncio.create_task(mic_ws_sender(client))
     client.tts_sender_task = asyncio.create_task(tts_ws_sender(client))
@@ -168,6 +176,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         client.media_tts_language = "hu"
                     else:
                         client.media_tts_language = "en"
+                    src = payload.get("audioSource") or payload.get("audio_source") or "server"
+                    client.use_client_microphone = (
+                        isinstance(src, str) and src.lower() in ("browser", "client", "websocket", "ws")
+                    )
                     await start_recording(client, http)
                 elif msg_type == "stop":
                     await stop_recording(client)
@@ -190,6 +202,14 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         await send_log(client, f"Unknown stream: {stream}", "warn")
                 else:
                     await send_log(client, f"Unknown message type: {msg_type}", "warn")
+            elif msg.type == WSMsgType.BINARY:
+                if client.recording and client.use_client_microphone:
+                    data = msg.data
+                    if isinstance(data, memoryview):
+                        data = data.tobytes()
+                    elif not isinstance(data, (bytes, bytearray)):
+                        data = bytes(data)
+                    await ingest_pcm_bytes(client, data)
             elif msg.type == WSMsgType.ERROR:
                 await send_log(client, f"WebSocket error: {ws.exception()}", "error")
     finally:
