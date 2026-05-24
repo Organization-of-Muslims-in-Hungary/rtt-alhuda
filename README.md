@@ -34,7 +34,35 @@ See [.env.example](.env.example) for all optional keys.
 python main.py
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000) when the server binds to localhost (default).
+
+### Raspberry Pi (phones on the same Wi‑Fi)
+
+1. **Bind aiohttp to all interfaces** — the default `127.0.0.1` only accepts connections from the Pi itself. For hall phones, set in `.env`:
+
+   ```env
+   RTT_ALHUDA_LISTEN_HOST=0.0.0.0
+   RTT_ALHUDA_LISTEN_PORT=3000
+   ```
+
+2. **`GET /api/lan-ipv4`** — On Linux (including Raspberry Pi OS), detection uses `hostname -I` plus a UDP route guess, and prefers private IPv4 (`192.168.x.x`, `10.x`, `172.16–31.x`) so the React app’s QR can show `http://<pi-ip>:<port>/` even when the operator opened the UI as `localhost`.
+
+3. **LAN only:** `0.0.0.0` exposes port 3000 on your local network by design. Do not port-forward it to the public internet without TLS and proper access control.
+
+### One-shot setup script (on the Pi)
+
+From `rtt-alhuda/` (with `../Khutba-app-frontend` present):
+
+```bash
+sudo ./scripts/pi-setup.sh --with-apt
+# If Node from apt is below 20 and npm run build fails:
+sudo ./scripts/pi-setup.sh --with-apt --with-node-repo
+
+# Optional: systemd unit + start now
+sudo ./scripts/pi-setup.sh --with-systemd --start-service
+```
+
+Then point nginx at `scripts/nginx-khutba-frontend.example.conf` (edit `root` and ports) so phones open one URL (React + QR + `/stream` same origin). See `scripts/pi-setup.sh` header for flags.
 
 ## Architecture
 
@@ -45,6 +73,7 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000).
 - **Audio streaming:** Binary frames on `/stream`:
   - **Server microphone** — raw PCM (16-bit, 16 kHz, mono), prefix `0x01`
   - **TTS output** (legacy same socket) — MP3, prefix `0x02`, only if subscribed to `tts`
+- **`GET /api/lan-ipv4`** — JSON `{"ipv4": "<addr>" | null}` for same-LAN share links (React QR in dev when the page is `localhost`).
 
 Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message for **legacy** primary-socket TTS text selection when using `subscribe` + `tts`.
 

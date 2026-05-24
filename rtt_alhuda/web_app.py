@@ -18,6 +18,7 @@ from rtt_alhuda.audio_stream_ws import (
     tts_ws_sender,
 )
 from rtt_alhuda.config import REPO_ROOT
+from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ClientState
 from rtt_alhuda.web_protocol import send_log
 from rtt_alhuda.openrouter_debug import log_startup_summary
@@ -503,12 +504,19 @@ async def server_control_handler(request: web.Request) -> web.Response:
     )
 
 
+async def lan_ipv4_handler(_request: web.Request) -> web.Response:
+    """JSON for dev QR codes: ``{"ipv4": "<addr>" | null}`` — same-LAN as this server."""
+
+    return web.json_response({"ipv4": detect_lan_ipv4()})
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
     app = web.Application()
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
+    app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/stream", ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
     app.router.add_get("/stream/text", text_stream_handler) # Add this line
