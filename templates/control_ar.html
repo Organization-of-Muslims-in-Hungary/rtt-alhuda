@@ -316,6 +316,17 @@
       btnStart.addEventListener('click', () => sendAction('start'));
       btnStop.addEventListener('click',  () => sendAction('stop'));
 
+      // Keep a background WebSocket to /stream so this page registers as a client.
+      let ws = null;
+      function ensureWs() {
+        if (ws && ws.readyState <= 1) return;
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(`${proto}//${location.host}/stream`);
+        ws.onclose = () => setTimeout(ensureWs, 2000);
+        ws.onerror = () => ws.close();
+      }
+      ensureWs();
+
       fetchStatus();
       fetchServerStatus();
       setInterval(fetchStatus, 3000);
