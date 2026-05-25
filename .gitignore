@@ -5,6 +5,9 @@
 *.pem
 *.key
 
+# Vite bundle copied next to the app for local “full stack” runs (optional)
+frontend_dist/
+
 # Python
 __pycache__/
 *.py[cod]

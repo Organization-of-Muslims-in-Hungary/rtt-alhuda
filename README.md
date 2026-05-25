@@ -51,7 +51,7 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000) when the server binds to loc
 
 ### One-shot setup script (on the Pi)
 
-From `rtt-alhuda/` (with `../Khutba-app-frontend` present):
+From `rtt-alhuda/` (with the frontend submodule initialized, or legacy `../Khutba-app-frontend` for local-only):
 
 ```bash
 sudo ./scripts/pi-setup.sh --with-apt
@@ -79,6 +79,7 @@ Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message 
 
 ## Files
 
+- [Khutba-app-frontend](Khutba-app-frontend) — **git submodule** (see [docs/frontend-submodule.md](../docs/frontend-submodule.md)); [`fly.toml`](fly.toml) uses **`build-target`** (`runtime-copy` vs `runtime-git`) and **`[build.args]`** (`FRONTEND_SRC`, `FRONTEND_GIT_URL`).
 - [main.py](main.py) — process entry
 - [fly.toml](fly.toml) — Fly.io (2 shared CPUs, 512 MB, port 8080)
 - [Dockerfile](Dockerfile) — container image for Fly / Cloud Run / Railway
@@ -88,3 +89,4 @@ Send optional `ttsLanguage` (`"en"` or `"hu"`) on the WebSocket `start` message 
 - [docs/deploy-cloudflare.md](../docs/deploy-cloudflare.md) — Pages + Tunnel
 - [docs/deploy-backend-free-hosts.md](../docs/deploy-backend-free-hosts.md) — free hosts + mic caveat
 - [docs/deploy-fly-io.md](../docs/deploy-fly-io.md) — Fly deploy steps
+- [docs/frontend-submodule.md](../docs/frontend-submodule.md) — git submodule for `Khutba-app-frontend`

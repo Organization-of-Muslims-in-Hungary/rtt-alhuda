@@ -23,9 +23,31 @@ from aiohttp import web
 
 from rtt_alhuda.web_app import create_app, log
 
+
+def _resolve_listen_port() -> int:
+    """Pick HTTP listen port for local and Fly runtimes."""
+
+    on_fly = bool(os.getenv("FLY_APP_NAME") or os.getenv("FLY_ALLOC_ID"))
+    if on_fly:
+        # Fly health checks and proxy routing target internal_port (8080 in fly.toml).
+        # Prefer PORT when present; ignore legacy 3000 values that can come from stale env/secrets.
+        fly_port = os.getenv("PORT", "").strip()
+        if fly_port.isdigit():
+            return int(fly_port)
+        app_port = os.getenv("RTT_ALHUDA_LISTEN_PORT", "").strip()
+        if app_port.isdigit() and int(app_port) != 3000:
+            return int(app_port)
+        return 8080
+
+    raw = os.getenv("RTT_ALHUDA_LISTEN_PORT", "").strip()
+    if raw.isdigit():
+        return int(raw)
+    return 3000
+
+
 if __name__ == "__main__":
     listen_host = os.getenv("RTT_ALHUDA_LISTEN_HOST", "127.0.0.1").strip() or "127.0.0.1"
-    listen_port = int(os.getenv("RTT_ALHUDA_LISTEN_PORT", "3000"))
+    listen_port = _resolve_listen_port()
 
     log(
         f"Binding aiohttp to {listen_host!r}:{listen_port} "

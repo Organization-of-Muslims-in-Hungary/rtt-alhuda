@@ -2,8 +2,10 @@
 # =============================================================================
 # Khutba Raspberry Pi setup (rtt-alhuda + Khutba-app-frontend)
 #
-# Run on the Pi with both repos present. Default layout:
-#   .../khutba-app/rtt-alhuda/           ← this repo (contains scripts/pi-setup.sh)
+# Run on the Pi with the frontend available. Preferred layout (git submodule):
+#   .../khutba-app/rtt-alhuda/                    ← this tree (scripts/pi-setup.sh)
+#   .../khutba-app/rtt-alhuda/Khutba-app-frontend/ ← submodule (see docs/frontend-submodule.md)
+# Legacy layout still supported:
 #   .../khutba-app/Khutba-app-frontend/
 #
 # Usage:
@@ -47,6 +49,8 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 
 if [[ -n "${KHUTBA_FRONTEND_DIR:-}" ]]; then
   FRONTEND_DIR="$(CDPATH= cd -- "${KHUTBA_FRONTEND_DIR}" && pwd)"
+elif [[ -f "${RTT_DIR}/Khutba-app-frontend/package.json" ]]; then
+  FRONTEND_DIR="$(CDPATH= cd -- "${RTT_DIR}/Khutba-app-frontend" && pwd)"
 else
   FRONTEND_DIR="$(CDPATH= cd -- "${RTT_DIR}/../Khutba-app-frontend" && pwd)"
 fi

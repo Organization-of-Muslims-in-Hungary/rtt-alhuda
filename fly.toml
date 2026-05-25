@@ -1,42 +1,54 @@
-# fly.toml app configuration file generated for rtt-alhuda on 2026-05-24T23:10:10Z
+# Fly.io — https://fly.io/docs/reference/configuration/
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# Run `fly deploy` from **`rtt-alhuda/`** (same folder as this file). Build context is that directory;
+# Fly’s remote builder does not reliably honor `context = ".."` to the monorepo parent.
 #
+# Docker: `APP_PREFIX` + `FRONTEND_SRC` / `runtime-git`; see docs/frontend-submodule.md
 
-app = 'rtt-alhuda'
-primary_region = 'fra'
+app = "rtt-alhuda"
+primary_region = "fra"
 
 [build]
-  dockerfile = 'Dockerfile'
+  dockerfile = "Dockerfile"
+  # runtime-git = shallow clone FRONTEND_GIT_URL each deploy (no Khutba-app-frontend/ in context).
+  # runtime-copy = COPY from FRONTEND_SRC under rtt-alhuda/ (submodule at rtt-alhuda/Khutba-app-frontend).
+  build-target = "runtime-git"
+
+[build.args]
+  APP_PREFIX = "."
+  FRONTEND_SRC = "Khutba-app-frontend"
+  FRONTEND_GIT_REF = "test/flyio"
+  # Public HTTPS clone URL (Docker build has no SSH keys). Private repo: use a PAT in URL or runtime-copy + submodule.
+  FRONTEND_GIT_URL = "https://github.com/Organization-of-Muslims-in-Hungary/Khutba-app-frontend.git"
 
 [env]
-  RTT_ALHUDA_LISTEN_HOST = '0.0.0.0'
-  RTT_ALHUDA_LISTEN_PORT = '8080'
+  RTT_ALHUDA_LISTEN_HOST = "0.0.0.0"
+  RTT_ALHUDA_LISTEN_PORT = "8080"
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = "stop"
   auto_start_machines = true
   min_machines_running = 0
 
   [http_service.concurrency]
-    type = 'connections'
-    hard_limit = 80
+    type = "connections"
     soft_limit = 50
+    hard_limit = 80
 
+  # Fly caps idle_timeout at 900s (15m).
   [http_service.http_options]
-    idle_timeout = 7200
+    idle_timeout = 900
 
   [[http_service.checks]]
-    interval = '30s'
-    timeout = '15s'
-    grace_period = '2m0s'
-    method = 'GET'
-    path = '/'
+    grace_period = "60s"
+    interval = "30s"
+    method = "GET"
+    timeout = "15s"
+    path = "/"
 
 [[vm]]
-  memory = '512mb'
-  cpu_kind = 'shared'
+  cpu_kind = "shared"
   cpus = 2
-  memory_mb = 1024
+  memory = "512mb"
