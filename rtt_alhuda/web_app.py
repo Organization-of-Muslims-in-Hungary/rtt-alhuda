@@ -161,7 +161,14 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     log("WebSocket client connected")
 
     try:
-        async for msg in ws:
+        # Use ``receive()`` instead of ``async for ws`` so server shutdown (Fly SIGTERM,
+        # deploy, auto-stop) surfaces as a normal close path. ``async for`` + cancellation
+        # can leave noisy aiohttp ``InvalidStateError`` traces in logs.
+        while True:
+            msg = await ws.receive()
+
+            if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                break
             if msg.type == WSMsgType.TEXT:
                 try:
                     payload = json.loads(msg.data)
@@ -530,12 +537,28 @@ async def lan_ipv4_handler(_request: web.Request) -> web.Response:
     return web.json_response({"ipv4": detect_lan_ipv4()})
 
 
+def _frontend_dist_dir() -> Path:
+    """Directory produced by `vite build` (Docker copies it to ``REPO_ROOT/frontend_dist``)."""
+
+    return REPO_ROOT / "frontend_dist"
+
+
+async def spa_index_handler(_: web.Request) -> web.StreamResponse:
+    """Serve the React SPA shell (client-side routes: ``/``, ``/tv``, …)."""
+
+    path = _frontend_dist_dir() / "index.html"
+    if not path.is_file():
+        return web.Response(status=404, text="Frontend bundle missing")
+    return web.FileResponse(path)
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
     app = web.Application()
-    app.router.add_get("/", index_handler)
-    app.router.add_get("/index.html", index_handler)
+    front = _frontend_dist_dir()
+    use_spa = (front / "index.html").is_file()
+
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/stream", ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
@@ -547,6 +570,30 @@ def create_app() -> web.Application:
     app.router.add_get("/api/control/{action}", control_handler)
     app.router.add_get("/api/browser/{action:.*}", browser_handler)
     app.router.add_get("/api/server/{action}", server_control_handler)
+
+    if use_spa:
+        assets = front / "assets"
+        if assets.is_dir():
+            app.router.add_static("/assets", assets, follow_symlinks=False)
+
+        def _root_file_handler(target: Path):
+            async def handler(_: web.Request) -> web.FileResponse:
+                return web.FileResponse(target)
+
+            return handler
+
+        for name in ("favicon.svg", "icons.svg", "vite.svg"):
+            p = front / name
+            if p.is_file():
+                app.router.add_get(f"/{name}", _root_file_handler(p))
+        app.router.add_get("/tv", spa_index_handler)
+        app.router.add_get("/", spa_index_handler)
+        app.router.add_get("/index.html", spa_index_handler)
+        log("Serving React app from frontend_dist (/, /tv)")
+    else:
+        app.router.add_get("/", index_handler)
+        app.router.add_get("/index.html", index_handler)
+        log("Serving legacy templates UI at / (no frontend_dist/index.html)")
 
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
