@@ -147,14 +147,22 @@
       </div>
     </div>
 
-    <!-- Language switcher -->
+    <!-- Language switcher (all displays) -->
     <div class="card">
-      <div class="card-title">🌐 Display Language</div>
+      <div class="card-title">🌐 All Displays Language</div>
       <div class="btn-row">
         <button class="btn btn-muted btn-sm" id="lang-btn-all" onclick="switchDisplayLang(null)">All</button>
         <button class="btn btn-gold  btn-sm" id="lang-btn-ar"  onclick="switchDisplayLang('ar')">عر Arabic</button>
         <button class="btn btn-blue  btn-sm" id="lang-btn-en"  onclick="switchDisplayLang('en')">EN English</button>
         <button class="btn btn-muted btn-sm" id="lang-btn-hu"  onclick="switchDisplayLang('hu')">HU Magyar</button>
+      </div>
+    </div>
+
+    <!-- Per-monitor control -->
+    <div class="card">
+      <div class="card-title">🖥 Connected Displays <span id="display-count" style="color:var(--green)"></span></div>
+      <div id="displays-list" style="display:flex;flex-direction:column;gap:10px">
+        <div style="color:var(--muted);font-size:13px">Loading…</div>
       </div>
     </div>
 
@@ -200,17 +208,18 @@
       }
 
       function applyStatus(data) {
+        const displays = data.displays || 0;
+        const dispStr = displays > 0 ? ` · ${displays} display(s)` : '';
         if (data.recording) {
           dot.className = 'big-dot recording';
           label.textContent = '● Recording';
-          const s = data.elapsed_seconds;
-          sub.textContent = s != null ? `Running ${Math.floor(s/60)}m ${s%60}s` : 'Live';
+          sub.textContent = 'Live' + dispStr;
           btnStart.disabled = true;
           btnStop.disabled  = false;
         } else {
           dot.className = 'big-dot';
           label.textContent = 'Stopped';
-          sub.textContent = data.listeners > 0 ? `${data.listeners} display(s) connected` : 'Ready';
+          sub.textContent = 'Ready' + dispStr;
           btnStart.disabled = false;
           btnStop.disabled  = true;
         }
@@ -296,6 +305,51 @@
         setTimeout(fetchServerStatus, 3000);
       };
 
+      // ── Per-monitor display control ──
+      const displaysList = document.getElementById('displays-list');
+      const displayCount = document.getElementById('display-count');
+      const LANGS = ['all','ar','en','hu'];
+      const LANG_LABELS = {all:'All', ar:'عر', en:'EN', hu:'HU'};
+      const LANG_COLORS = {all:'var(--muted)', ar:'var(--gold)', en:'var(--blue)', hu:'var(--muted)'};
+
+      async function setDisplayLang(displayId, lang) {
+        try {
+          const r = await fetch(`/api/display/${displayId}/language?lang=${lang}`);
+          const d = await r.json();
+          showToast(d.ok ? `✔ Display ${displayId} → ${lang.toUpperCase()}` : `Error: ${d.reason}`, d.ok);
+          fetchDisplays();
+        } catch { showToast('Network error', false); }
+      }
+
+      function renderDisplays(displays) {
+        displayCount.textContent = displays.length ? `(${displays.length})` : '(0)';
+        if (!displays.length) {
+          displaysList.innerHTML = '<div style="color:var(--muted);font-size:13px">No displays connected. Open /tv?display=1 on monitors.</div>';
+          return;
+        }
+        displaysList.innerHTML = displays.map(d => `
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+            <span style="font-size:14px;font-weight:600;min-width:80px">🖥 ${d.id}</span>
+            <span style="font-size:11px;color:var(--muted);min-width:40px">${d.page}</span>
+            <div style="display:flex;gap:4px;margin-left:auto">
+              ${LANGS.map(l => `<button
+                class="btn btn-sm"
+                style="padding:6px 10px;font-size:11px;min-width:0;border-color:${d.language===l ? LANG_COLORS[l] : 'var(--border)'};color:${d.language===l ? LANG_COLORS[l] : 'var(--muted)'};font-weight:${d.language===l?'700':'400'}"
+                onclick="setDisplayLang('${d.id}','${l}')">${LANG_LABELS[l]}</button>`).join('')}
+            </div>
+          </div>
+        `).join('');
+      }
+      window.setDisplayLang = setDisplayLang;
+
+      async function fetchDisplays() {
+        try {
+          const r = await fetch('/api/displays');
+          const d = await r.json();
+          renderDisplays(d.displays || []);
+        } catch { renderDisplays([]); }
+      }
+
       btnStart.addEventListener('click', () => sendAction('start'));
       btnStop.addEventListener('click',  () => sendAction('stop'));
 
@@ -312,8 +366,10 @@
 
       fetchStatus();
       fetchServerStatus();
+      fetchDisplays();
       setInterval(fetchStatus, 3000);
       setInterval(fetchServerStatus, 15000);
+      setInterval(fetchDisplays, 5000);
     })();
     </script>
   </body>

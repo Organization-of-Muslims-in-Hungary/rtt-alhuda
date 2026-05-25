@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -350,16 +351,154 @@ async def control_ar_page_handler(_: web.Request) -> web.StreamResponse:
     return _template_response("control_ar.html")
 
 
-# ── Pi-specific control helpers ───────────────────────────────────────────────
+# ── Display control broadcast (SSE → all frontend pages) ─────────────────────
+
+@dataclass
+class DisplaySubscriber:
+    display_id: str
+    queue: asyncio.Queue
+    language: str = "all"
+    page: str = "/tv"
+    connected_at: float = 0.0
+
+
+_displays: dict[str, DisplaySubscriber] = {}
+_display_counter: int = 0
+
+
+def _next_display_id() -> str:
+    global _display_counter
+    _display_counter += 1
+    return str(_display_counter)
+
+
+async def _broadcast_display_event(event: dict, target_id: str | None = None) -> int:
+    """Push a control event to subscribers. If target_id set, only that display."""
+    payload = f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode("utf-8")
+    dead: list[str] = []
+    sent = 0
+    for did, sub in list(_displays.items()):
+        if target_id and did != target_id:
+            continue
+        try:
+            sub.queue.put_nowait(payload)
+            sent += 1
+        except asyncio.QueueFull:
+            dead.append(did)
+    for did in dead:
+        _displays.pop(did, None)
+    return sent
+
+
+async def display_control_sse_handler(request: web.Request) -> web.StreamResponse:
+    """SSE stream that frontend pages subscribe to for remote commands.
+
+    Query params:
+      ?id=<display_id>  — reuse existing ID (reconnect)
+      ?page=<path>      — which page this display is showing
+    """
+    response = web.StreamResponse(
+        status=200,
+        headers={
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        },
+    )
+    await response.prepare(request)
+
+    requested_id = request.query.get("id", "").strip()
+    page = request.query.get("page", "/tv").strip()
+
+    if requested_id and requested_id in _displays:
+        display_id = requested_id
+        sub = _displays[display_id]
+        sub.queue = asyncio.Queue(maxsize=32)
+        sub.page = page
+    else:
+        display_id = requested_id or _next_display_id()
+        sub = DisplaySubscriber(
+            display_id=display_id,
+            queue=asyncio.Queue(maxsize=32),
+            page=page,
+            connected_at=time.monotonic(),
+        )
+        _displays[display_id] = sub
+
+    log(f"Display '{display_id}' connected (page={page}, {len(_displays)} total)")
+
+    # Send the display its assigned ID + current language setting
+    welcome = f"data: {json.dumps({'command': 'welcome', 'displayId': display_id, 'language': sub.language})}\n\n"
+    await response.write(welcome.encode("utf-8"))
+
+    try:
+        while True:
+            payload = await sub.queue.get()
+            await response.write(payload)
+    except (asyncio.CancelledError, ConnectionResetError):
+        pass
+    finally:
+        _displays.pop(display_id, None)
+        log(f"Display '{display_id}' disconnected ({len(_displays)} total)")
+
+    return response
+
+
+async def displays_list_handler(request: web.Request) -> web.Response:
+    """List all connected displays and their current settings."""
+    displays = [
+        {
+            "id": sub.display_id,
+            "language": sub.language,
+            "page": sub.page,
+        }
+        for sub in _displays.values()
+    ]
+    return web.json_response({"displays": displays, "count": len(displays)})
+
+
+async def display_set_language_handler(request: web.Request) -> web.Response:
+    """Set language for a specific display or all displays."""
+    display_id = request.match_info.get("id", "")
+    lang = request.query.get("lang", "all").strip()
+
+    if lang not in ("ar", "en", "hu", "all"):
+        return web.json_response({"ok": False, "reason": "invalid lang"}, status=400)
+
+    if display_id == "all":
+        for sub in _displays.values():
+            sub.language = lang
+        n = await _broadcast_display_event({"command": "language", "lang": lang})
+        return web.json_response({"ok": True, "lang": lang, "targets": n})
+
+    sub = _displays.get(display_id)
+    if not sub:
+        return web.json_response({"ok": False, "reason": "display not found"}, status=404)
+
+    sub.language = lang
+    await _broadcast_display_event({"command": "language", "lang": lang}, target_id=display_id)
+    return web.json_response({"ok": True, "displayId": display_id, "lang": lang})
+
+
+# ── Pi-specific shell helpers (optional, used alongside SSE broadcast) ────────
 
 _XENV = {"DISPLAY": ":0", "XAUTHORITY": "/home/pi/.Xauthority"}
 
-_BROWSER_PAGES = {
-    "app":      "http://localhost/app",
-    "tv":       "http://localhost/tv",
-    "operator": "http://localhost/",
-    "control":  "http://localhost/control",
-}
+def _browser_pages() -> dict[str, str]:
+    """URLs the Pi's local browser navigates to. Uses nginx (port 80) if available, else app port."""
+    port = os.getenv("RTT_ALHUDA_LISTEN_PORT", "3000").strip()
+    base = "http://localhost" if port == "80" else f"http://localhost:{port}"
+    return {
+        "app":      f"{base}/app",
+        "tv":       f"{base}/tv",
+        "operator": f"{base}/",
+        "control":  f"{base}/control",
+    }
+
+
+def _is_pi() -> bool:
+    return Path("/usr/bin/chromium-browser").exists() or Path("/usr/bin/chromium").exists()
 
 
 async def _run(cmd: str) -> tuple[int, str]:
@@ -384,6 +523,7 @@ async def control_handler(request: web.Request) -> web.Response:
         return web.json_response({
             "recording": recording,
             "connected": client is not None,
+            "displays": len(_displays),
         })
 
     if action == "start":
@@ -407,74 +547,84 @@ async def control_handler(request: web.Request) -> web.Response:
 
 
 async def browser_handler(request: web.Request) -> web.Response:
-    """Control the Chromium kiosk browser from the phone.
+    """Control all frontend displays from the phone.
+
+    Broadcasts commands via SSE to all subscribed pages.
+    Also runs Pi-specific shell commands when on a Raspberry Pi.
 
     Actions:
-      navigate/<page>  — open a named page  (app | tv | operator | control)
-      exit-kiosk       — reopen without --kiosk flag (windowed, escapable)
-      kiosk            — reopen in kiosk/fullscreen mode
-      refresh          — reload current page via xdotool Ctrl+R
-      close            — kill the browser
-      language/<lang>  — broadcast lang_switch to the active WebSocket client
+      navigate/<page>  — tell all displays to navigate to a page
+      refresh          — tell all displays to reload
+      close            — tell all displays to close/blank
+      language/<lang>  — switch display language (ar|en|hu|all)
+      exit-kiosk       — (Pi only) reopen browser without --kiosk
+      kiosk            — (Pi only) reopen browser in kiosk mode
     """
     action = request.match_info.get("action", "")
-    browser_bin = (
-        "chromium-browser"
-        if Path("/usr/bin/chromium-browser").exists()
-        else "chromium"
-    )
 
     if action.startswith("navigate/"):
         page_key = action.split("/", 1)[1]
-        url = _BROWSER_PAGES.get(page_key)
+        pages = _browser_pages()
+        url = pages.get(page_key)
         if not url:
             return web.json_response(
                 {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
             )
-        await _run("pkill -f chromium 2>/dev/null; sleep 1")
-        await _run(
-            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
-            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
-            f"--no-first-run '{url}' &"
-        )
-        return web.json_response({"ok": True, "action": f"navigate:{url}"})
-
-    if action == "exit-kiosk":
-        url = _BROWSER_PAGES["app"]
-        await _run("pkill -f chromium 2>/dev/null; sleep 1")
-        await _run(
-            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
-            f"{browser_bin} --start-maximized --noerrdialogs --no-first-run '{url}' &"
-        )
-        return web.json_response({"ok": True, "action": "exit-kiosk"})
-
-    if action == "kiosk":
-        url = _BROWSER_PAGES["app"]
-        await _run("pkill -f chromium 2>/dev/null; sleep 1")
-        await _run(
-            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
-            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
-            f"--no-first-run '{url}' &"
-        )
-        return web.json_response({"ok": True, "action": "kiosk"})
+        n = await _broadcast_display_event({"command": "navigate", "url": url, "page": page_key})
+        if _is_pi():
+            browser_bin = "chromium-browser" if Path("/usr/bin/chromium-browser").exists() else "chromium"
+            await _run("pkill -f chromium 2>/dev/null; sleep 1")
+            await _run(
+                f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+                f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
+                f"--no-first-run '{url}' &"
+            )
+        return web.json_response({"ok": True, "action": f"navigate:{page_key}", "subscribers": n})
 
     if action == "refresh":
-        rc, out = await _run(
-            "xdotool search --onlyvisible --class chromium "
-            "key --clearmodifiers ctrl+r"
-        )
-        return web.json_response({"ok": rc == 0, "action": "refresh", "detail": out})
+        n = await _broadcast_display_event({"command": "refresh"})
+        if _is_pi():
+            await _run(
+                "xdotool search --onlyvisible --class chromium "
+                "key --clearmodifiers ctrl+r"
+            )
+        return web.json_response({"ok": True, "action": "refresh", "subscribers": n})
 
     if action == "close":
-        await _run("pkill -f chromium 2>/dev/null")
-        return web.json_response({"ok": True, "action": "close"})
+        n = await _broadcast_display_event({"command": "close"})
+        if _is_pi():
+            await _run("pkill -f chromium 2>/dev/null")
+        return web.json_response({"ok": True, "action": "close", "subscribers": n})
 
     if action.startswith("language/"):
         lang = action.split("/", 1)[1]
-        client: ClientState | None = request.app.get("last_ws_client")
-        if client and not client.ws.closed:
-            await client.ws.send_str(json.dumps({"type": "lang_switch", "lang": lang}))
-        return web.json_response({"ok": True, "lang": lang})
+        for sub in _displays.values():
+            sub.language = lang
+        n = await _broadcast_display_event({"command": "language", "lang": lang})
+        return web.json_response({"ok": True, "lang": lang, "subscribers": n})
+
+    if action == "exit-kiosk":
+        if _is_pi():
+            browser_bin = "chromium-browser" if Path("/usr/bin/chromium-browser").exists() else "chromium"
+            url = _browser_pages()["app"]
+            await _run("pkill -f chromium 2>/dev/null; sleep 1")
+            await _run(
+                f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+                f"{browser_bin} --start-maximized --noerrdialogs --no-first-run '{url}' &"
+            )
+        return web.json_response({"ok": True, "action": "exit-kiosk"})
+
+    if action == "kiosk":
+        if _is_pi():
+            browser_bin = "chromium-browser" if Path("/usr/bin/chromium-browser").exists() else "chromium"
+            url = _browser_pages()["app"]
+            await _run("pkill -f chromium 2>/dev/null; sleep 1")
+            await _run(
+                f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
+                f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
+                f"--no-first-run '{url}' &"
+            )
+        return web.json_response({"ok": True, "action": "kiosk"})
 
     return web.json_response(
         {"ok": False, "reason": "unknown browser action"}, status=400
@@ -519,12 +669,15 @@ def create_app() -> web.Application:
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/stream", ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
-    app.router.add_get("/stream/text", text_stream_handler) # Add this line
+    app.router.add_get("/stream/text", text_stream_handler)
+    app.router.add_get("/stream/display-control", display_control_sse_handler)
     # Control dashboard (English + Arabic)
     app.router.add_get("/control", control_page_handler)
     app.router.add_get("/control_ar", control_ar_page_handler)
     # Control REST API
     app.router.add_get("/api/control/{action}", control_handler)
+    app.router.add_get("/api/displays", displays_list_handler)
+    app.router.add_get("/api/display/{id}/language", display_set_language_handler)
     app.router.add_get("/api/browser/{action:.*}", browser_handler)
     app.router.add_get("/api/server/{action}", server_control_handler)
 
