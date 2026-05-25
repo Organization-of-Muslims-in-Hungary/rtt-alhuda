@@ -564,14 +564,16 @@ async def browser_handler(request: web.Request) -> web.Response:
 
     if action.startswith("navigate/"):
         page_key = action.split("/", 1)[1]
-        pages = _browser_pages()
-        url = pages.get(page_key)
-        if not url:
+        page_paths = {"app": "/app", "tv": "/tv", "operator": "/", "control": "/control"}
+        path = page_paths.get(page_key)
+        if not path:
             return web.json_response(
                 {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
             )
-        n = await _broadcast_display_event({"command": "navigate", "url": url, "page": page_key})
+        n = await _broadcast_display_event({"command": "navigate", "path": path, "page": page_key})
         if _is_pi():
+            pages = _browser_pages()
+            url = pages[page_key]
             browser_bin = "chromium-browser" if Path("/usr/bin/chromium-browser").exists() else "chromium"
             await _run("pkill -f chromium 2>/dev/null; sleep 1")
             await _run(
