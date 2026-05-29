@@ -622,7 +622,7 @@
 
         const ctxText = document.createElement("div");
         ctxText.className = "request-value";
-        ctxText.textContent = `Transcription: ${msg.originalTranscription || "(empty)"}\nTranslation: ${msg.originalTranslation || "(empty)"}`;
+        ctxText.textContent = `Original Arabic: ${msg.originalAr || "(empty)"}\nOriginal English: ${msg.originalEn || "(empty)"}\nOriginal Hungarian: ${msg.originalHu || "(empty)"}`;
         ctxText.style.background = "var(--bg)";
         ctxText.style.border = "1px solid var(--line)";
         ctxText.style.padding = "4px";
@@ -731,8 +731,10 @@
           try {
             const msg = JSON.parse(event.data);
             if (msg?.type === "transcription") {
-              const trans = msg.transcription ?? "";
-              const trad = msg.translation ?? "";
+              const trans = msg.ar ?? "";
+              const ttsLang = document.getElementById("tts-lang-select").value;
+              const trad = ttsLang === "hu" ? (msg.hu ?? "") : (msg.en ?? "");
+              
               appendCommittedText(transcriptionCommitted, trans);
               appendCommittedText(translationCommitted, trad, " ");
 
