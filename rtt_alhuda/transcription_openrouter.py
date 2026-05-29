@@ -31,23 +31,65 @@ async def send_chunk_to_openrouter(
         "| base64_wav_chars:",
         len(audio_b64_wav),
     )
+    #     RULE 3 — NO HALLUCINATION FROM ELONGATION:
+    # Arabic recitation (Quran, Adhan, Khutbah) uses vocal elongation (مد). A long drawn-out
+    # vowel sound ("Allaaaaahu") is still ONE word (الله), NOT a signal to add more words.
+    # Do NOT use elongated sounds as a cue to predict or insert additional phrases.
+    # Transcribe only the discrete words that are clearly and completely spoken.
+
 
     system = """
-    You are a live transcriber and translator.
+        You are a strict, verbatim audio-to-text transcriber and translator.
 
-    The spoken audio will be in Arabic, English, or Hungarian.
+    You will receive:
+    1. "context_ar" — what has already been transcribed.
+    2. "context_en" / "context_hu" — already-translated English and Hungarian.
+    3. An audio chunk (WAV) that includes the original transcription then continues.
 
-    YOUR JOB:
-    1. Detect the spoken language in the audio.
-    2. Transcribe ONLY the NEW words in the audio into that language's matching JSON key ('ar', 'en', or 'hu').
-    3. Translate those new words into the OTHER TWO languages.
+    YOUR JOB: Extract the text and reply with the diffs of that new words and their translation, so append only the NEW words that appear in the audio after "context_ar". 
 
-    RULES:
-    - DO NOT repeat words from the Context. Only output NEW words.
-    - If the audio is silent or unclear, return empty strings for all fields: {"ar": "", "en": "", "hu": ""}.
-    - Do not autocomplete or hallucinate.
-    - DO NOT include the last second (incomplete words/sentences) of the audio (they will be sent again in the next chunk with more context).
-    - Don't add new lines.
+    ══ STRICT RULES — violating any rule is a critical failure ══
+
+    RULE 1 — NO REPETITION:
+    The audio chunk will contain overlapped content, you should not output it twice.
+    Carefully find where the context_ar ends inside the audio.
+    Output ONLY what comes after that point.
+    If every word in the audio is already covered by context_ar, return empty strings.
+    Example:
+    context_ar: "السلام عليكم"
+    audio: "السلام عليكم ورحمة الله"
+    output_ar: "ورحمة الله"
+
+    
+    RULE 2 — NO AUTOCOMPLETE:
+    Audio may contain familiar incomplete sentences. Do NOT attempt to predict or complete them. Leave incomplete sentences as they are, without adding any words.
+    Transcribe only what is clearly and fully spoken in the audio chunk, even if it results in incomplete phrases.
+    Example:
+    audio: "السلام عليكم"
+    output_ar: "السلام عليكم" 
+    
+    Do NOT add "ورحمة الله" even if you know it is likely to come next (This is really a critical failure)
+
+
+    RULE 3 — SILENCE / NOISE:
+    If the audio is silent, noisy, contains only elongated breath/vocal sounds with no
+    new discrete words, or is too unclear — return EXACTLY:
+    {"ar": "", "en": "", "hu": ""}
+
+    RULE 4 — INCOMPLETE LAST WORD:
+    Do NOT include the last incomplete word/syllable at the end of the chunk.
+    Incomplete audio words/syllables at the end of the chunk will be repeated in the next chunk, so do not incude if you had a bit of doubt about them being incomplete.
+    Example:
+    "audio: "السلام عليكم ورح"
+    output_ar: "السلام عليكم"
+    If the audio ends with "السلام عليكم ورح", do NOT output "ورحمة الله" — only output what you are sure is complete: "السلام عليكم" and omit the incomplete "ورح".
+
+    RULE 5 — SCRIPT:
+    "ar" MUST be written in Arabic script (Unicode Arabic letters: ا ب ت ...).
+    Don't romanize, transliterate, or write Arabic words using Latin letters.
+    Example of WRONG output: "Bismillahirrahmanirrahim"
+    Example of CORRECT output: "بسم الله الرحمن الرحيم"
+
     """
     body = {
         "model": OPENROUTER_MODEL,
@@ -63,11 +105,12 @@ async def send_chunk_to_openrouter(
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            f'"Context AR": "{original_ar}", '
-                            f'"Context EN": "{original_en}", '
-                            f'"Context HU": "{original_hu}"'
-                        ),
+                        "text": json.dumps({
+                            "context_ar": original_ar,
+                            "context_en": original_en,
+                            "context_hu": original_hu
+                        }, ensure_ascii=False, indent=2),
+
                     },
                     {
                         "type": "input_audio",
