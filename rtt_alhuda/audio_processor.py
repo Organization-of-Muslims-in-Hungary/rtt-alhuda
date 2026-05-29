@@ -220,10 +220,24 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 new_samples_count = new_audio_end_sample - new_audio_start_sample
 
                 # Check if we have enough new audio, otherwise wait
+                _window_was_capped = False
+                _uncapped_start = 0
                 if new_samples_count < int(SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS):
                     pass
                 else:
                     start_sample = max(client.buffer_start_sample, past_start_sample)
+
+                    # Cap the total PCM window sent to OR.
+                    # Without a cap, slow OR responses cause each ChunkInfo to
+                    # span more than PROCESSING_INTERVAL_SECONDS of "new" audio,
+                    # and context windows cascade: 3s→11s→19s→24s→…
+                    max_window_samples = (CONTEXT_CHUNK_COUNT + 1) * int(
+                        SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS
+                    )
+                    _uncapped_start = start_sample
+                    if end_sample - start_sample > max_window_samples:
+                        start_sample = end_sample - max_window_samples
+
                     start_offset_samples = start_sample - client.buffer_start_sample
                     end_offset_samples = end_sample - client.buffer_start_sample
 
@@ -238,6 +252,16 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                     new_audio_pcm = bytes(client.pcm_buffer[new_start_byte:end_byte])
 
                     total_samples = end_sample - start_sample
+                    _window_was_capped = start_sample != _uncapped_start
+
+            if _window_was_capped:
+                await send_log(
+                    client,
+                    f"Audio window capped: "
+                    f"{(end_sample - _uncapped_start) / SAMPLE_RATE:.1f}s → "
+                    f"{total_samples / SAMPLE_RATE:.1f}s "
+                    f"(max {(CONTEXT_CHUNK_COUNT + 1) * PROCESSING_INTERVAL_SECONDS}s)",
+                )
 
             if not chunk_pcm:
                 next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
