@@ -622,7 +622,7 @@
 
         const ctxText = document.createElement("div");
         ctxText.className = "request-value";
-        ctxText.textContent = `Original Arabic: ${msg.originalAr || "(empty)"}\nOriginal English: ${msg.originalEn || "(empty)"}\nOriginal Hungarian: ${msg.originalHu || "(empty)"}`;
+        ctxText.textContent = `context_ar: ${msg.originalAr || ""}\ncontext_en: ${msg.originalEn || ""}\ncontext_hu: ${msg.originalHu || ""}`;
         ctxText.style.background = "var(--bg)";
         ctxText.style.border = "1px solid var(--line)";
         ctxText.style.padding = "4px";
