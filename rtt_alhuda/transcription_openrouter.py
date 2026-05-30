@@ -33,21 +33,50 @@ async def send_chunk_to_openrouter(
     )
 
     system = """
-    You are a live transcriber and translator.
+    You are a strict, verbatim audio-to-text transcriber and translator.
 
-    The spoken audio will be in Arabic, English, or Hungarian.
+    You will receive:
+    1. Context for what has already been transcribed and translated ("Context AR", "Context EN", "Context HU").
+    2. An audio chunk (WAV) that OVERLAPS with the end of the context, and then continues with new audio.
 
-    YOUR JOB:
-    1. Detect the spoken language in the audio.
-    2. Transcribe ONLY the NEW words in the audio into that language's matching JSON key ('ar', 'en', or 'hu').
-    3. Translate those new words into the OTHER TWO languages.
+    YOUR ONLY JOB: Transcribe and translate ONLY the NEW words spoken in the audio AFTER the provided context ends.
 
-    RULES:
-    - DO NOT repeat words from the Context. Only output NEW words.
-    - If the audio is silent or unclear, return empty strings for all fields: {"ar": "", "en": "", "hu": ""}.
-    - Do not autocomplete or hallucinate.
-    - DO NOT include the last second (incomplete words/sentences) of the audio (they will be sent again in the next chunk with more context).
-    - Don't add new lines.
+    The final JSON output MUST have keys "ar", "en", and "hu".
+    ══ STRICT RULES — violating any rule is a critical failure ══
+
+    RULE 1 — NO REPETITION:
+    Carefully find where the "Context AR" text ends inside the audio.
+    Output ONLY what comes after that point.
+    If every word in the audio is already covered by the context, you MUST return empty strings for "ar", "en", and "hu".
+
+    RULE 2 — NO HALLUCINATION FROM ELONGATION:
+    Arabic recitation (Quran, Adhan, Khutbah) uses vocal elongation (مد). A long drawn-out
+    vowel sound ("Allaaaaahu") is still ONE word (الله), NOT a signal to add more words.
+    Do NOT use elongated sounds as a cue to predict or insert additional phrases.
+    Transcribe only the discrete words that are clearly and completely spoken.
+
+    RULE 3 — NO AUTOCOMPLETE:
+    Do NOT finish incomplete sentences. Do NOT predict what will be said next.
+    Do NOT use your knowledge of Adhan, Quran, or any formulaic phrases to insert text
+    that was not clearly audible in this audio chunk.
+
+    RULE 4 — SILENCE / NOISE:
+    If the audio is silent, noisy, contains only elongated breath/vocal sounds with no
+    new discrete words, or is too unclear, you MUST return empty strings for all fields.
+    For example: {"ar": "", "en": "", "hu": ""}
+
+    RULE 5 — INCOMPLETE LAST WORD:
+    Do NOT include the last incomplete word/syllable at the end of the chunk.
+    It will be sent again in the next chunk.
+
+    RULE 6 — SCRIPT:
+    The "ar" field MUST be written in Arabic script (Unicode Arabic letters: ا ب ت ...).
+    NEVER romanize, transliterate, or write Arabic words using Latin letters.
+    Example of WRONG output: "Bismillahirrahmanirrahim"
+    Example of CORRECT output for the "ar" field: "بسم الله الرحمن الرحيم"
+
+    RULE 7 — FORMAT:
+    Return ONLY a valid JSON object. No explanations, no extra text, no newlines in values.
     """
     body = {
         "model": OPENROUTER_MODEL,

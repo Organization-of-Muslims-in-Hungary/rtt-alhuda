@@ -35,8 +35,7 @@ async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> N
         if audio_bytes:
             await q.put(audio_bytes)
     except Exception as exc:
-        if not client.ws.closed:
-            await send_log(client, f"TTS error: {exc}", "error")
+        await send_log(client, f"TTS error: {exc}", "error")
 
 
 async def _enqueue_tts_for_lang(
@@ -59,8 +58,7 @@ async def _enqueue_tts_for_lang(
         if audio_bytes:
             await q.put(audio_bytes)
     except Exception as exc:
-        if not client.ws.closed:
-            await send_log(client, f"TTS ({lang}) error: {exc}", "error")
+        await send_log(client, f"TTS ({lang}) error: {exc}", "error")
 
 
 async def _process_chunk(
@@ -179,7 +177,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
     try:
         next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
 
-        while client.recording and not client.ws.closed:
+        while client.recording:
             wait_seconds = next_cycle_at - time.monotonic()
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)

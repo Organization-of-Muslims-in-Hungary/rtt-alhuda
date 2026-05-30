@@ -26,7 +26,7 @@ class ChunkInfo:
 class ClientState:
     """Per-WebSocket runtime state for one connected browser session."""
 
-    ws: web.WebSocketResponse
+    ws: Optional[web.WebSocketResponse] = None
     pcm_buffer: bytearray = field(default_factory=bytearray)
     buffer_start_sample: int = 0
     total_samples_written: int = 0

@@ -9,12 +9,18 @@ async def send_log(client: ClientState, message: str, level: str = "info") -> No
     """Send a structured log message to the connected browser."""
 
     payload = {"type": "log", "level": level, "message": message}
-    if not client.ws.closed:
-        await client.ws.send_str(json.dumps(payload))
+    if client.ws and not client.ws.closed:
+        try:
+            await client.ws.send_str(json.dumps(payload))
+        except Exception:
+            pass
 
 
 async def send_transcription(client: ClientState, message: dict) -> None:
     """Send a transcription update JSON object to the browser."""
 
-    if not client.ws.closed:
-        await client.ws.send_str(json.dumps(message))
+    if client.ws and not client.ws.closed:
+        try:
+            await client.ws.send_str(json.dumps(message))
+        except Exception:
+            pass

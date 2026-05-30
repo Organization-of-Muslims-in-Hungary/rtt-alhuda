@@ -15,17 +15,17 @@ async def mic_ws_sender(client: ClientState) -> None:
     if queue is None:
         return
 
-    try:
-        while client.recording and not client.ws.closed:
-            try:
-                pcm = await asyncio.wait_for(queue.get(), timeout=0.2)
-            except asyncio.TimeoutError:
-                continue
+    while client.recording:
+        try:
+            pcm = await asyncio.wait_for(queue.get(), timeout=0.2)
+        except asyncio.TimeoutError:
+            continue
 
-            if client.ws_mic_subscribed and not client.ws.closed:
+        if client.ws and client.ws_mic_subscribed and not client.ws.closed:
+            try:
                 await client.ws.send_bytes(MIC_PREFIX + pcm)
-    except (ConnectionResetError, ConnectionError):
-        pass
+            except Exception:
+                pass
 
 
 async def mic_original_fanout_loop(client: ClientState) -> None:
@@ -61,17 +61,17 @@ async def tts_ws_sender(client: ClientState) -> None:
     if queue is None:
         return
 
-    try:
-        while client.recording and not client.ws.closed:
-            try:
-                audio = await asyncio.wait_for(queue.get(), timeout=0.2)
-            except asyncio.TimeoutError:
-                continue
+    while client.recording:
+        try:
+            audio = await asyncio.wait_for(queue.get(), timeout=0.2)
+        except asyncio.TimeoutError:
+            continue
 
-            if client.ws_tts_subscribed and not client.ws.closed:
+        if client.ws and client.ws_tts_subscribed and not client.ws.closed:
+            try:
                 await client.ws.send_bytes(TTS_PREFIX + audio)
-    except (ConnectionResetError, ConnectionError):
-        pass
+            except Exception:
+                pass
 
 
 async def tts_fanout_loop(client: ClientState, lang: str) -> None:

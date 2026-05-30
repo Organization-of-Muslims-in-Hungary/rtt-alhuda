@@ -146,8 +146,12 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
 
     http: ClientSession = request.app["http_client"]
-    client = ClientState(ws=ws)
-    request.app["last_ws_client"] = client
+    client = request.app.get("last_ws_client")
+    if client is None:
+        client = ClientState(ws=ws)
+        request.app["last_ws_client"] = client
+    else:
+        client.ws = ws
 
     await send_log(client, "WebSocket connected")
     log("WebSocket client connected")
@@ -193,9 +197,8 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             elif msg.type == WSMsgType.ERROR:
                 await send_log(client, f"WebSocket error: {ws.exception()}", "error")
     finally:
-        await stop_recording(client)
-        if request.app.get("last_ws_client") is client:
-            request.app["last_ws_client"] = None
+        if client.ws is ws:
+            client.ws = None
         log("WebSocket client disconnected")
 
     return ws
@@ -332,6 +335,11 @@ async def on_startup(app: web.Application) -> None:
     app["http_client"] = ClientSession()
     log_startup_summary()
 
+    # Start headless recording automatically on boot
+    headless_client = ClientState(ws=None)
+    app["last_ws_client"] = headless_client
+    asyncio.create_task(start_recording(headless_client, app["http_client"]))
+    log("Auto-started headless recording session.")
 
 async def on_cleanup(app: web.Application) -> None:
     """Close the shared HTTP client when the server shuts down."""
@@ -472,7 +480,7 @@ async def browser_handler(request: web.Request) -> web.Response:
     if action.startswith("language/"):
         lang = action.split("/", 1)[1]
         client: ClientState | None = request.app.get("last_ws_client")
-        if client and not client.ws.closed:
+        if client and client.ws and not client.ws.closed:
             await client.ws.send_str(json.dumps({"type": "lang_switch", "lang": lang}))
         return web.json_response({"ok": True, "lang": lang})
 

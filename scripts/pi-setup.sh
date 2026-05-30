@@ -105,7 +105,7 @@ cat >"${SERVICE_PATH}" <<EOF
 [Unit]
 Description=Khutba rtt-alhuda (transcription /stream + /api/lan-ipv4)
 After=network-online.target sound.target
-Wants=network-online.target
+Wants=network-online.target sound.target
 
 [Service]
 Type=simple
@@ -180,6 +180,10 @@ NGINXEOF
 sed -i "s|__ROOT_PLACEHOLDER__|root ${FRONTEND_DIR}/dist;|" "${NGINX_CONF_AVAIL}"
 chmod 644 "${NGINX_CONF_AVAIL}"
 ln -sf "${NGINX_CONF_AVAIL}" "${NGINX_CONF_ENABLED}"
+# Remove default Nginx site to prevent potential conflicts
+if [[ -L "/etc/nginx/sites-enabled/default" ]]; then
+  rm -f "/etc/nginx/sites-enabled/default"
+fi
 nginx -t
 systemctl enable nginx
 systemctl reload-or-restart nginx
