@@ -46,7 +46,7 @@ async def send_chunk_to_openrouter(
     2. "context_en" / "context_hu" — already-translated English and Hungarian.
     3. An audio chunk (WAV) that includes the original transcription then continues.
 
-    YOUR JOB: Extract the text and reply with the diffs of that new words and their translation, so append only the NEW words that appear in the audio after "context_ar". 
+    YOUR JOB: Extract the text and reply with the diffs of those new words and their translation, so append only the NEW words that appear in the audio after "context_ar". 
 
     ══ STRICT RULES — violating any rule is a critical failure ══
 
