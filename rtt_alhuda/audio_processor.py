@@ -245,11 +245,19 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                     end_byte = end_offset_samples * bytes_per_frame
                     chunk_pcm = bytes(client.pcm_buffer[start_byte:end_byte])
 
-                    # For VAD, we only want to check the NEW audio, not the historical overlap
-                    safe_new_audio_start = max(client.buffer_start_sample, new_audio_start_sample)
-                    new_start_offset = safe_new_audio_start - client.buffer_start_sample
-                    new_start_byte = new_start_offset * bytes_per_frame
-                    new_audio_pcm = bytes(client.pcm_buffer[new_start_byte:end_byte])
+                    # For VAD, check only the new audio that falls within the
+                    # actual sent window.  When capping is active the "new"
+                    # portion can be much larger than the capped window, and
+                    # noise across that larger region easily exceeds the 5%
+                    # speech threshold, letting silent audio through.
+                    vad_check_start = max(
+                        client.buffer_start_sample,
+                        new_audio_start_sample,
+                        start_sample,
+                    )
+                    vad_start_offset = vad_check_start - client.buffer_start_sample
+                    vad_start_byte = vad_start_offset * bytes_per_frame
+                    new_audio_pcm = bytes(client.pcm_buffer[vad_start_byte:end_byte])
 
                     total_samples = end_sample - start_sample
                     _window_was_capped = start_sample != _uncapped_start
