@@ -4,7 +4,7 @@ import webrtcvad
 
 from rtt_alhuda.config import CHANNELS, SAMPLE_RATE, SAMPLE_WIDTH_BYTES
 
-vad = webrtcvad.Vad(2)  # aggressiveness 0-3 (2 is aggressive)
+vad = webrtcvad.Vad(3)  # aggressiveness 0-3 (2 is aggressive)
 
 
 def is_speech_present(pcm_data: bytes) -> bool:
