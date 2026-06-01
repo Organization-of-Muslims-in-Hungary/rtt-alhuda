@@ -590,9 +590,16 @@
 
         const head = document.createElement("div");
         head.className = "request-head";
-        const latencyStr =
-          msg.latencyMs !== undefined ? ` (${msg.latencyMs}ms)` : "";
-        head.textContent = `Request — ${new Date().toLocaleTimeString()}${latencyStr}`;
+
+        // Build latency label from new timing breakdown (falls back to legacy latencyMs)
+        let latencyStr = "";
+        if (msg.timing) {
+          const t = msg.timing;
+          latencyStr = ` (${t.cycleTotalMs}ms total / ${t.apiMs}ms api)`;
+        } else if (msg.latencyMs !== undefined) {
+          latencyStr = ` (${msg.latencyMs}ms)`;
+        }
+        head.textContent = `Request — ${new Date().toLocaleTimeString()}`;
         wrapper.appendChild(head);
 
         if (msg.originalAudioChunk) {
@@ -607,10 +614,24 @@
           audio.style.height = "32px";
           audioDiv.appendChild(audio);
 
+          // Timing / audio-duration metadata row
           const meta = document.createElement("div");
           meta.className = "audio-meta";
           meta.style.marginBottom = "8px";
-          meta.textContent = `${msg.processedChunks || 1} chunk, duration ${Number(msg.chunkDurationSeconds || 0).toFixed(3)}s (window ${msg.windowSeconds}s)`;
+          if (msg.timing) {
+            const t = msg.timing;
+            const dur = Number(msg.chunkDurationSeconds || 0).toFixed(1);
+            // meta.style.fontFamily = "monospace";
+            meta.style.fontSize = "11px";
+            meta.style.color = "var(--text-dim, #999)";
+            meta.textContent =
+              `⏱ total ${t.cycleTotalMs}ms  =  ` +
+              `queue +${t.queueWaitMs}  buffer +${t.bufferCopyMs}  ` +
+              `vad +${t.vadMs}  wav +${t.wavEncodeMs}  api +${t.apiMs}  ` +
+              `│  audio ${dur}s`;
+          } else {
+            meta.textContent = `${msg.processedChunks || 1} chunk, duration ${Number(msg.chunkDurationSeconds || 0).toFixed(3)}s (window ${msg.windowSeconds}s)`;
+          }
           audioDiv.appendChild(meta);
           wrapper.appendChild(audioDiv);
         }
@@ -749,6 +770,19 @@
             if (msg?.type === "log") {
               const level = msg.level ? `[${msg.level}] ` : "";
               appendServerLog(level + (msg.message || ""));
+              
+              // If it's a VAD skip log with timing, show it in the network pane so the timeline is gapless
+              if (msg.timing && msg.timing.skipped) {
+                // Synthesize a fake transcription message for the UI
+                addNetworkRequest({
+                  type: "transcription",
+                  latencyMs: 0,
+                  timing: msg.timing,
+                  rawResponse: "none (VAD skip)",
+                  originalAudioChunk: null, // Don't try to play skipped audio
+                  chunkDurationSeconds: (msg.timing.audioDurationMs || 0) / 1000
+                });
+              }
               return;
             }
 

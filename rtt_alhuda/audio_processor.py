@@ -5,6 +5,7 @@ import base64
 import json
 import time
 import traceback
+from dataclasses import dataclass
 
 from aiohttp import ClientError, ClientSession
 
@@ -21,6 +22,51 @@ from rtt_alhuda.models import ChunkInfo, ClientState
 from rtt_alhuda.transcription_openrouter import send_chunk_to_openrouter
 from rtt_alhuda.tts_openrouter import TtsLanguage, synthesize_speech_bytes
 from rtt_alhuda.web_protocol import send_log, send_transcription
+
+
+@dataclass
+class _CycleTiming:
+    """Mutable accumulator for per-cycle wall-clock timing breakdown."""
+
+    cycle_start: float = 0.0
+    queue_wait_ms: int = 0
+    buffer_copy_ms: int = 0
+    vad_ms: int = 0
+    wav_encode_ms: int = 0
+    api_ms: int = 0
+    cycle_total_ms: int = 0
+    audio_duration_ms: int = 0
+    skipped: bool = False
+    skip_reason: str = ""
+
+    def snapshot(self) -> dict:
+        """Return a JSON-serialisable dict of all timing phases."""
+        return {
+            "cycleTotalMs": self.cycle_total_ms,
+            "queueWaitMs": self.queue_wait_ms,
+            "bufferCopyMs": self.buffer_copy_ms,
+            "vadMs": self.vad_ms,
+            "wavEncodeMs": self.wav_encode_ms,
+            "apiMs": self.api_ms,
+            "audioDurationMs": self.audio_duration_ms,
+            "skipped": self.skipped,
+            "skipReason": self.skip_reason,
+        }
+
+    def summary_line(self) -> str:
+        """One-line human-readable breakdown for server logs."""
+        parts = [
+            f"cycle={self.cycle_total_ms}ms",
+            f"queue_wait={self.queue_wait_ms}ms",
+            f"buffer_copy={self.buffer_copy_ms}ms",
+            f"vad={self.vad_ms}ms",
+            f"wav_enc={self.wav_encode_ms}ms",
+            f"api={self.api_ms}ms",
+            f"audio={self.audio_duration_ms}ms",
+        ]
+        if self.skipped:
+            parts.append(f"SKIP({self.skip_reason})")
+        return " | ".join(parts)
 
 
 async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> None:
@@ -73,6 +119,7 @@ async def _process_chunk(
     original_en: str,
     original_hu: str,
     chunk_duration_seconds: float,
+    timing: _CycleTiming,
 ):
     try:
         start_time = time.time()
@@ -83,7 +130,7 @@ async def _process_chunk(
             original_en,
             original_hu,
         )
-        latency_ms = int((time.time() - start_time) * 1000)
+        timing.api_ms = int((time.time() - start_time) * 1000)
 
         new_ar = str(result.get("ar", ""))
         new_en = str(result.get("en", ""))
@@ -100,6 +147,9 @@ async def _process_chunk(
                 )
             )
 
+        timing.audio_duration_ms = int(chunk_duration_seconds * 1000)
+        timing.cycle_total_ms = int((time.monotonic() - timing.cycle_start) * 1000)
+
         message = {
             "type": "transcription",
             "ar": new_ar,
@@ -113,7 +163,8 @@ async def _process_chunk(
             "processedChunks": 1,
             "windowSeconds": chunk_duration_seconds,
             "chunkDurationSeconds": chunk_duration_seconds,
-            "latencyMs": latency_ms,
+            "latencyMs": timing.api_ms,
+            "timing": timing.snapshot(),
         }
         await send_transcription(client, message)
 
@@ -180,12 +231,21 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
         next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
 
         while client.recording and not client.ws.closed:
-            wait_seconds = next_cycle_at - time.monotonic()
+            t = _CycleTiming()
+
+            # --- Phase: cadence wait (included in wall time) ---
+            t.cycle_start = time.monotonic()
+            wait_seconds = next_cycle_at - t.cycle_start
             if wait_seconds > 0:
                 await asyncio.sleep(wait_seconds)
+                t.queue_wait_ms = int((time.monotonic() - t.cycle_start) * 1000)
+            else:
+                t.queue_wait_ms = 0
 
             bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
 
+            # --- Phase: buffer copy ---
+            _t0 = time.monotonic()
             async with client.lock:
                 end_sample = client.total_samples_written
                 chunk_pcm = b""
@@ -220,23 +280,10 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 new_samples_count = new_audio_end_sample - new_audio_start_sample
 
                 # Check if we have enough new audio, otherwise wait
-                _window_was_capped = False
-                _uncapped_start = 0
                 if new_samples_count < int(SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS):
                     pass
                 else:
                     start_sample = max(client.buffer_start_sample, past_start_sample)
-
-                    # Cap the total PCM window sent to OR.
-                    # Without a cap, slow OR responses cause each ChunkInfo to
-                    # span more than PROCESSING_INTERVAL_SECONDS of "new" audio,
-                    # and context windows cascade: 3s→11s→19s→24s→…
-                    max_window_samples = (CONTEXT_CHUNK_COUNT + 1) * int(
-                        SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS
-                    )
-                    _uncapped_start = start_sample
-                    if end_sample - start_sample > max_window_samples:
-                        start_sample = end_sample - max_window_samples
 
                     start_offset_samples = start_sample - client.buffer_start_sample
                     end_offset_samples = end_sample - client.buffer_start_sample
@@ -245,47 +292,61 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                     end_byte = end_offset_samples * bytes_per_frame
                     chunk_pcm = bytes(client.pcm_buffer[start_byte:end_byte])
 
-                    # For VAD, check only the new audio that falls within the
-                    # actual sent window.  When capping is active the "new"
-                    # portion can be much larger than the capped window, and
-                    # noise across that larger region easily exceeds the 5%
-                    # speech threshold, letting silent audio through.
-                    vad_check_start = max(
-                        client.buffer_start_sample,
-                        new_audio_start_sample,
-                        start_sample,
-                    )
-                    vad_start_offset = vad_check_start - client.buffer_start_sample
-                    vad_start_byte = vad_start_offset * bytes_per_frame
-                    new_audio_pcm = bytes(client.pcm_buffer[vad_start_byte:end_byte])
+                    # VAD checks only the NEW audio (since last chunk), not context
+                    safe_new_audio_start = max(client.buffer_start_sample, new_audio_start_sample)
+                    new_start_offset = safe_new_audio_start - client.buffer_start_sample
+                    new_start_byte = new_start_offset * bytes_per_frame
+                    new_audio_pcm = bytes(client.pcm_buffer[new_start_byte:end_byte])
 
                     total_samples = end_sample - start_sample
-                    _window_was_capped = start_sample != _uncapped_start
 
-            if _window_was_capped:
-                await send_log(
-                    client,
-                    f"Audio window capped: "
-                    f"{(end_sample - _uncapped_start) / SAMPLE_RATE:.1f}s → "
-                    f"{total_samples / SAMPLE_RATE:.1f}s "
-                    f"(max {(CONTEXT_CHUNK_COUNT + 1) * PROCESSING_INTERVAL_SECONDS}s)",
-                )
+            t.buffer_copy_ms = int((time.monotonic() - _t0) * 1000)
 
             if not chunk_pcm:
+                t.cycle_total_ms = int((time.monotonic() - t.cycle_start) * 1000)
+                t.skipped = True
+                t.skip_reason = "no_new_audio"
                 next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
                 continue
 
             # --- VAD check on exclusively new audio
-            if not is_speech_present(new_audio_pcm):
-                await send_log(client, "Silent audio chunk detected by VAD, skipping LLM request.")
+            _t0 = time.monotonic()
+            speech_detected = is_speech_present(new_audio_pcm)
+            t.vad_ms = int((time.monotonic() - _t0) * 1000)
+
+            if not speech_detected:
+                t.cycle_total_ms = int((time.monotonic() - t.cycle_start) * 1000)
+                t.skipped = True
+                t.skip_reason = "silent_vad"
+                t.audio_duration_ms = int((total_samples / SAMPLE_RATE) * 1000)
+                await send_log(
+                    client,
+                    f"Silent audio chunk — skipped (wall {t.cycle_total_ms}ms, vad {t.vad_ms}ms)",
+                    "info",
+                    timing=t.snapshot(),
+                )
                 async with client.lock:
                     client.last_chunk_end_sample = new_audio_end_sample
+                    # Add an empty chunk to history so the context window anchor moves forward.
+                    # Without this, the anchor gets stuck and the 'context' audio window stretches endlessly.
+                    client.chunk_history.append(
+                        ChunkInfo(
+                            start_sample=new_audio_start_sample,
+                            end_sample=new_audio_end_sample,
+                            ar="",
+                            en="",
+                            hu="",
+                        )
+                    )
                 next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
                 continue
             # ------------------------
 
+            # --- Phase: WAV + base64 encoding
+            _t0 = time.monotonic()
             wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
             wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
+            t.wav_encode_ms = int((time.monotonic() - _t0) * 1000)
 
             request_started_at = time.monotonic()
 
@@ -299,6 +360,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 original_en,
                 original_hu,
                 chunk_duration_seconds=total_samples / SAMPLE_RATE,
+                timing=t,
             )
 
             async with client.lock:
