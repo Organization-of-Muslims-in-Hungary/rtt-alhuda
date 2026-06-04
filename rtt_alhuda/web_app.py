@@ -19,7 +19,7 @@ from rtt_alhuda.audio_stream_ws import (
 )
 from rtt_alhuda.config import REPO_ROOT
 from rtt_alhuda.lan_detect import detect_lan_ipv4
-from rtt_alhuda.models import ClientState
+from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log
 from rtt_alhuda.openrouter_debug import log_startup_summary
 
@@ -36,49 +36,54 @@ def log(*parts: object) -> None:
     print(f"[{get_hours_timestamp()}]", *parts)
 
 
-async def stop_recording(client: ClientState) -> None:
-    """Stop the active recording and cancel background tasks for the client."""
+def _get_session(request: web.Request) -> ServerSession:
+    """Return the single server-owned session from the application."""
+    return request.app["session"]
 
-    client.recording = False
 
-    if client.tts_fanout_tasks:
-        for t in list(client.tts_fanout_tasks.values()):
+async def stop_recording(session: ServerSession) -> None:
+    """Stop recording and cancel all background tasks on the session."""
+
+    session.recording = False
+
+    if session.tts_fanout_tasks:
+        for t in list(session.tts_fanout_tasks.values()):
             if t and not t.done():
                 t.cancel()
         await asyncio.gather(
-            *client.tts_fanout_tasks.values(),
+            *session.tts_fanout_tasks.values(),
             return_exceptions=True,
         )
-        client.tts_fanout_tasks = None
-    client.tts_queues = None
+        session.tts_fanout_tasks = None
+    session.tts_queues = None
 
-    if client.original_fanout_task and not client.original_fanout_task.done():
-        client.original_fanout_task.cancel()
+    if session.original_fanout_task and not session.original_fanout_task.done():
+        session.original_fanout_task.cancel()
         await asyncio.gather(
-            client.original_fanout_task,
+            session.original_fanout_task,
             return_exceptions=True,
         )
-    client.original_fanout_task = None
-    client.original_pcm_queue = None
+    session.original_fanout_task = None
+    session.original_pcm_queue = None
 
-    async with client.lock:
-        for _lang, socks in list(client.tts_satellites.items()):
+    async with session.lock:
+        for _lang, socks in list(session.tts_satellites.items()):
             for sat_ws in list(socks):
                 if not sat_ws.closed:
                     await sat_ws.close(code=1001)
             socks.clear()
-        for sat_ws in list(client.original_audio_satellites):
+        for sat_ws in list(session.original_audio_satellites):
             if not sat_ws.closed:
                 await sat_ws.close(code=1001)
-        client.original_audio_satellites.clear()
+        session.original_audio_satellites.clear()
 
     tasks = [
         task
         for task in (
-            client.recorder_task,
-            client.processor_task,
-            client.mic_sender_task,
-            client.tts_sender_task,
+            session.recorder_task,
+            session.processor_task,
+            session.mic_sender_task,
+            session.tts_sender_task,
         )
         if task
     ]
@@ -87,71 +92,69 @@ async def stop_recording(client: ClientState) -> None:
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    client.recorder_task = None
-    client.processor_task = None
-    client.mic_sender_task = None
-    client.tts_sender_task = None
-    client.media_mic_queue = None
-    client.media_tts_queue = None
-    client.ws_mic_subscribed = False
-    client.ws_tts_subscribed = False
+    session.recorder_task = None
+    session.processor_task = None
+    session.mic_sender_task = None
+    session.tts_sender_task = None
+    session.media_mic_queue = None
+    session.media_tts_queue = None
 
 
-async def start_recording(client: ClientState, http: ClientSession) -> None:
-    """Reset client state and start microphone capture plus audio processing."""
+async def start_recording(session: ServerSession, http: ClientSession) -> None:
+    """Reset session state and start microphone capture plus audio processing."""
 
-    if client.recording:
-        await send_log(client, "Recording already running", "warn")
+    if session.recording:
+        await send_log(session, "Recording already running", "warn")
         return
 
-    client.recording = True
-    client.pcm_buffer.clear()
-    client.buffer_start_sample = 0
-    client.total_samples_written = 0
-    client.chunk_history.clear()
-    client.last_chunk_end_sample = 0
-    client.ws_mic_subscribed = False
-    client.ws_tts_subscribed = False
+    session.recording = True
+    session.pcm_buffer.clear()
+    session.buffer_start_sample = 0
+    session.total_samples_written = 0
+    session.chunk_history.clear()
+    session.last_chunk_end_sample = 0
 
-    client.media_mic_queue = asyncio.Queue(maxsize=50)
-    client.media_tts_queue = asyncio.Queue(maxsize=8)
-    client.original_pcm_queue = asyncio.Queue(maxsize=50)
-    client.original_fanout_task = asyncio.create_task(
-        mic_original_fanout_loop(client),
+    session.media_mic_queue = asyncio.Queue(maxsize=50)
+    session.media_tts_queue = asyncio.Queue(maxsize=8)
+    session.original_pcm_queue = asyncio.Queue(maxsize=50)
+    session.original_fanout_task = asyncio.create_task(
+        mic_original_fanout_loop(session),
         name="mic-original-fanout",
     )
-    client.tts_queues = {
+    session.tts_queues = {
         "en": asyncio.Queue(maxsize=8),
         "hu": asyncio.Queue(maxsize=8),
     }
-    client.tts_fanout_tasks = {
+    session.tts_fanout_tasks = {
         lang: asyncio.create_task(
-            tts_fanout_loop(client, lang),
+            tts_fanout_loop(session, lang),
             name=f"tts-fanout-{lang}",
         )
         for lang in ("en", "hu")
     }
 
-    client.recorder_task = asyncio.create_task(capture_microphone_loop(client))
-    client.processor_task = asyncio.create_task(process_audio_loop(client, http))
-    client.mic_sender_task = asyncio.create_task(mic_ws_sender(client))
-    client.tts_sender_task = asyncio.create_task(tts_ws_sender(client))
-    await send_log(client, "Recording started")
+    session.recorder_task = asyncio.create_task(capture_microphone_loop(session))
+    session.processor_task = asyncio.create_task(process_audio_loop(session, http))
+    session.mic_sender_task = asyncio.create_task(mic_ws_sender(session))
+    session.tts_sender_task = asyncio.create_task(tts_ws_sender(session))
+    await send_log(session, "Recording started")
 
 
-async def ws_handler(request: web.Request) -> web.WebSocketResponse:
-    """Handle browser control messages for a single WebSocket session."""
+async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
+    """Debug WebSocket: observe logs/transcriptions, optionally subscribe to audio.
+
+    Multiple clients can connect simultaneously.  Disconnecting does NOT
+    affect recording — the session is server-owned.
+    """
 
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    http: ClientSession = request.app["http_client"]
-    client = ClientState(ws=ws)
-    client.text_sse_clients = request.app["text_sse_clients"]
-    request.app["last_ws_client"] = client
+    session = _get_session(request)
+    session.debug_ws_clients.add(ws)
 
-    await send_log(client, "WebSocket connected")
-    log("WebSocket client connected")
+    await send_log(session, "Debug WebSocket connected")
+    log("Debug WebSocket client connected")
 
     try:
         async for msg in ws:
@@ -159,51 +162,67 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 try:
                     payload = json.loads(msg.data)
                 except json.JSONDecodeError:
-                    await send_log(client, "Invalid JSON message", "warn")
+                    await send_log(session, "Invalid JSON message", "warn")
                     continue
 
                 msg_type = payload.get("type")
                 if msg_type == "start":
-                    lang_raw = payload.get("ttsLanguage") or payload.get("tts_language") or "en"
-                    if isinstance(lang_raw, str) and lang_raw.lower() in ("hu", "hungarian"):
-                        client.media_tts_language = "hu"
+                    lang_raw = (
+                        payload.get("ttsLanguage")
+                        or payload.get("tts_language")
+                        or "en"
+                    )
+                    if isinstance(lang_raw, str) and lang_raw.lower() in (
+                        "hu",
+                        "hungarian",
+                    ):
+                        session.media_tts_language = "hu"
                     else:
-                        client.media_tts_language = "en"
-                    await start_recording(client, http)
+                        session.media_tts_language = "en"
+                    http: ClientSession = request.app["http_client"]
+                    await start_recording(session, http)
                 elif msg_type == "stop":
-                    await stop_recording(client)
-                    await send_log(client, "Recording stopped")
+                    await stop_recording(session)
+                    await send_log(session, "Recording stopped")
                 elif msg_type == "subscribe":
                     stream = payload.get("stream")
                     if stream == "mic":
-                        client.ws_mic_subscribed = True
+                        session.mic_subscribers.add(ws)
                     elif stream == "tts":
-                        client.ws_tts_subscribed = True
+                        session.tts_subscribers.add(ws)
                     else:
-                        await send_log(client, f"Unknown stream: {stream}", "warn")
+                        await send_log(
+                            session, f"Unknown stream: {stream}", "warn"
+                        )
                 elif msg_type == "unsubscribe":
                     stream = payload.get("stream")
                     if stream == "mic":
-                        client.ws_mic_subscribed = False
+                        session.mic_subscribers.discard(ws)
                     elif stream == "tts":
-                        client.ws_tts_subscribed = False
+                        session.tts_subscribers.discard(ws)
                     else:
-                        await send_log(client, f"Unknown stream: {stream}", "warn")
+                        await send_log(
+                            session, f"Unknown stream: {stream}", "warn"
+                        )
                 else:
-                    await send_log(client, f"Unknown message type: {msg_type}", "warn")
+                    await send_log(
+                        session, f"Unknown message type: {msg_type}", "warn"
+                    )
             elif msg.type == WSMsgType.ERROR:
-                await send_log(client, f"WebSocket error: {ws.exception()}", "error")
+                await send_log(
+                    session, f"WebSocket error: {ws.exception()}", "error"
+                )
     finally:
-        await stop_recording(client)
-        if request.app.get("last_ws_client") is client:
-            request.app["last_ws_client"] = None
-        log("WebSocket client disconnected")
+        session.debug_ws_clients.discard(ws)
+        session.mic_subscribers.discard(ws)
+        session.tts_subscribers.discard(ws)
+        log("Debug WebSocket client disconnected")
 
     return ws
 
 
 async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
-    """WebSocket: ``en``/``hu`` → MP3 (0x02). ``ar`` → live mic PCM (0x01), not TTS."""
+    """WebSocket: ``en``/``hu`` -> MP3 (0x02). ``ar`` -> live mic PCM (0x01), not TTS."""
 
     lang = (request.match_info.get("lang") or "").lower()
     if lang not in ("ar", "en", "hu"):
@@ -212,40 +231,34 @@ async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
-    async def wait_active_primary() -> Optional[ClientState]:
+    session = _get_session(request)
+
+    async def wait_recording() -> bool:
+        """Wait until the session is recording (or the satellite disconnects)."""
         ping_interval = 0
         while not ws.closed:
-            primary: Optional[ClientState] = request.app.get("last_ws_client")
-            if primary is not None and primary.recording:
-                if lang == "ar" or primary.tts_queues is not None:
-                    return primary
-
-            # Keep the WebSocket alive while waiting for a session.
+            if session.recording:
+                if lang == "ar" or session.tts_queues is not None:
+                    return True
             ping_interval += 1
             if ping_interval >= 50:          # ~10 s at 0.2 s sleeps
                 await ws.ping()
                 ping_interval = 0
-
             await asyncio.sleep(0.2)
-        return None
+        return False
 
-    primary = await wait_active_primary()
-    if primary is None or ws.closed:
+    if not await wait_recording():
         if not ws.closed:
             await ws.close()
         return ws
 
-    async with primary.lock:
+    async with session.lock:
         if lang == "ar":
-            primary.original_audio_satellites.add(ws)
+            session.original_audio_satellites.add(ws)
         else:
-            primary.tts_satellites[lang].add(ws)
+            session.tts_satellites[lang].add(ws)
 
     try:
-        # Receive loop with periodic ping to detect silently-dropped clients.
-        # Without this, `async for msg in ws` blocks indefinitely when the
-        # remote end vanishes without sending a close frame, leaving the
-        # satellite in the fanout set forever (stale connection).
         while not ws.closed:
             try:
                 msg = await asyncio.wait_for(ws.receive(), timeout=20)
@@ -260,11 +273,11 @@ async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
                 except Exception:
                     break
     finally:
-        async with primary.lock:
+        async with session.lock:
             if lang == "ar":
-                primary.original_audio_satellites.discard(ws)
+                session.original_audio_satellites.discard(ws)
             else:
-                primary.tts_satellites[lang].discard(ws)
+                session.tts_satellites[lang].discard(ws)
         if not ws.closed:
             await ws.close()
     return ws
@@ -275,6 +288,7 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
 
     Data is pushed directly from ``_process_chunk`` — no polling.
     This handler just registers the response and keeps the connection alive.
+    SSE clients are fully independent of any WebSocket connection.
     """
 
     response = web.StreamResponse(
@@ -289,14 +303,11 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    sse_set: set = request.app["text_sse_clients"]
-    sse_set.add(response)
+    session = _get_session(request)
+    session.text_sse_clients.add(response)
     log("SSE text stream client connected")
 
     try:
-        # Keep the connection alive with periodic SSE comments.
-        # aiohttp cancels this coroutine when the client disconnects.
-        # 5 s is short enough to detect dead connections quickly.
         while True:
             await asyncio.sleep(5)
             await response.write(b": keepalive\n\n")
@@ -304,7 +315,7 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
             OSError, RuntimeError):
         pass
     finally:
-        sse_set.discard(response)
+        session.text_sse_clients.discard(response)
         log("SSE text stream client disconnected")
 
     return response
@@ -373,32 +384,29 @@ async def _run(cmd: str) -> tuple[int, str]:
 
 
 async def control_handler(request: web.Request) -> web.Response:
-    """Phone-friendly REST API for remote start/stop/status of recording."""
+    """Phone-friendly REST API for remote start/stop/status of recording.
+
+    Operates directly on the server session — no WebSocket needed.
+    """
     action = request.match_info.get("action", "status")
-    client: ClientState | None = request.app.get("last_ws_client")
+    session = _get_session(request)
 
     if action == "status":
-        recording = bool(client and client.recording)
         return web.json_response({
-            "recording": recording,
-            "connected": client is not None,
+            "recording": session.recording,
         })
 
     if action == "start":
-        if client is None:
-            return web.json_response({"ok": False, "reason": "no_client_connected"})
-        if client.recording:
+        if session.recording:
             return web.json_response({"ok": False, "reason": "already_recording"})
         http: ClientSession = request.app["http_client"]
-        await start_recording(client, http)
+        await start_recording(session, http)
         return web.json_response({"ok": True, "action": "started"})
 
     if action == "stop":
-        if client is None:
-            return web.json_response({"ok": False, "reason": "no_client_connected"})
-        if not client.recording:
+        if not session.recording:
             return web.json_response({"ok": False, "reason": "not_recording"})
-        await stop_recording(client)
+        await stop_recording(session)
         return web.json_response({"ok": True, "action": "stopped"})
 
     return web.json_response({"ok": False, "reason": "unknown_action"}, status=400)
@@ -469,9 +477,16 @@ async def browser_handler(request: web.Request) -> web.Response:
 
     if action.startswith("language/"):
         lang = action.split("/", 1)[1]
-        client: ClientState | None = request.app.get("last_ws_client")
-        if client and not client.ws.closed:
-            await client.ws.send_str(json.dumps({"type": "lang_switch", "lang": lang}))
+        session = _get_session(request)
+        session.media_tts_language = lang
+        # Notify all connected debug WS clients about the language switch.
+        payload = json.dumps({"type": "lang_switch", "lang": lang})
+        for ws in list(session.debug_ws_clients):
+            if not ws.closed:
+                try:
+                    await ws.send_str(payload)
+                except (ConnectionResetError, ConnectionError, RuntimeError):
+                    pass
         return web.json_response({"ok": True, "lang": lang})
 
     return web.json_response(
@@ -503,33 +518,29 @@ async def server_control_handler(request: web.Request) -> web.Response:
 
 
 async def network_status_handler(request: web.Request) -> web.Response:
-    """Return live connection counts for SSE and WebSocket clients."""
+    """Return live connection counts for SSE, debug WS, and satellite clients."""
 
-    sse_set: set = request.app.get("text_sse_clients", set())
-    client: Optional[ClientState] = request.app.get("last_ws_client")
+    session = _get_session(request)
 
-    ws_satellites = {"ar": 0, "en": 0, "hu": 0}
-    primary_connected = False
-    recording = False
+    async with session.lock:
+        ws_satellites = {
+            "ar": sum(
+                1 for w in session.original_audio_satellites if not w.closed
+            ),
+            "en": sum(
+                1 for w in session.tts_satellites.get("en", ()) if not w.closed
+            ),
+            "hu": sum(
+                1 for w in session.tts_satellites.get("hu", ()) if not w.closed
+            ),
+        }
 
-    if client is not None:
-        primary_connected = not client.ws.closed
-        recording = client.recording
-        async with client.lock:
-            ws_satellites["ar"] = sum(
-                1 for w in client.original_audio_satellites if not w.closed
-            )
-            ws_satellites["en"] = sum(
-                1 for w in client.tts_satellites.get("en", ()) if not w.closed
-            )
-            ws_satellites["hu"] = sum(
-                1 for w in client.tts_satellites.get("hu", ()) if not w.closed
-            )
+    debug_count = sum(1 for w in session.debug_ws_clients if not w.closed)
 
     return web.json_response({
-        "sse_clients": len(sse_set),
-        "ws_primary": primary_connected,
-        "ws_recording": recording,
+        "sse_clients": len(session.text_sse_clients),
+        "debug_ws_clients": debug_count,
+        "ws_recording": session.recording,
         "ws_satellites": ws_satellites,
     })
 
@@ -544,14 +555,15 @@ def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
     app = web.Application()
-    app["text_sse_clients"] = set()
+    session = ServerSession()
+    app["session"] = session
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/api/network-status", network_status_handler)
-    app.router.add_get("/stream", ws_handler)
+    app.router.add_get("/stream", debug_ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
-    app.router.add_get("/stream/text", text_stream_handler) # Add this line
+    app.router.add_get("/stream/text", text_stream_handler)
     # Control dashboard (English + Arabic)
     app.router.add_get("/control", control_page_handler)
     app.router.add_get("/control_ar", control_ar_page_handler)

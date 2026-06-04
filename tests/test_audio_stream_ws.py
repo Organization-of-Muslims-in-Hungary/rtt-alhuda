@@ -11,125 +11,137 @@ from rtt_alhuda.audio_stream_ws import (
     tts_fanout_loop,
     tts_ws_sender,
 )
+from rtt_alhuda.models import ServerSession
 
 
-def _make_client(*, mic_subscribed: bool = True, tts_subscribed: bool = True):
-    """Build a minimal mock ClientState for sender tests."""
-    client = MagicMock()
-    client.ws = AsyncMock()
-    client.ws.closed = False
-    client.recording = True
-    client.ws_mic_subscribed = mic_subscribed
-    client.ws_tts_subscribed = tts_subscribed
-    client.media_mic_queue = asyncio.Queue()
-    client.media_tts_queue = asyncio.Queue()
-    return client
+def _make_session(
+    *,
+    mic_subscribers: list | None = None,
+    tts_subscribers: list | None = None,
+) -> ServerSession:
+    """Build a ServerSession with queues and optional subscriber mocks."""
+    session = ServerSession()
+    session.recording = True
+    session.media_mic_queue = asyncio.Queue()
+    session.media_tts_queue = asyncio.Queue()
+    if mic_subscribers:
+        session.mic_subscribers = set(mic_subscribers)
+    if tts_subscribers:
+        session.tts_subscribers = set(tts_subscribers)
+    return session
+
+
+def _mock_ws(*, closed: bool = False) -> AsyncMock:
+    ws = AsyncMock()
+    ws.closed = closed
+    return ws
 
 
 @pytest.mark.asyncio
 async def test_mic_sender_prefixes_with_0x01():
-    client = _make_client()
+    ws = _mock_ws()
+    session = _make_session(mic_subscribers=[ws])
     pcm = b"\x00\x01" * 160
-    await client.media_mic_queue.put(pcm)
+    await session.media_mic_queue.put(pcm)
 
     async def stop_after_one(*_args, **_kwargs):
-        client.recording = False
+        session.recording = False
 
-    client.ws.send_bytes = AsyncMock(side_effect=stop_after_one)
+    ws.send_bytes = AsyncMock(side_effect=stop_after_one)
 
-    await mic_ws_sender(client)
+    await mic_ws_sender(session)
 
-    client.ws.send_bytes.assert_called_once()
-    sent = client.ws.send_bytes.call_args[0][0]
+    ws.send_bytes.assert_called_once()
+    sent = ws.send_bytes.call_args[0][0]
     assert sent[0:1] == b"\x01"
     assert sent[1:] == pcm
 
 
 @pytest.mark.asyncio
 async def test_tts_sender_prefixes_with_0x02():
-    client = _make_client()
+    ws = _mock_ws()
+    session = _make_session(tts_subscribers=[ws])
     mp3 = b"\xff\xfb\x90\x00" + b"\x00" * 100
-    await client.media_tts_queue.put(mp3)
+    await session.media_tts_queue.put(mp3)
 
     async def stop_after_one(*_args, **_kwargs):
-        client.recording = False
+        session.recording = False
 
-    client.ws.send_bytes = AsyncMock(side_effect=stop_after_one)
+    ws.send_bytes = AsyncMock(side_effect=stop_after_one)
 
-    await tts_ws_sender(client)
+    await tts_ws_sender(session)
 
-    client.ws.send_bytes.assert_called_once()
-    sent = client.ws.send_bytes.call_args[0][0]
+    ws.send_bytes.assert_called_once()
+    sent = ws.send_bytes.call_args[0][0]
     assert sent[0:1] == b"\x02"
     assert sent[1:] == mp3
 
 
 @pytest.mark.asyncio
-async def test_mic_sender_discards_when_unsubscribed():
-    client = _make_client(mic_subscribed=False)
+async def test_mic_sender_skips_when_no_subscribers():
+    """When no WS is subscribed, frames are drained but not sent."""
+    session = _make_session()  # no mic_subscribers
     pcm = b"\x00\x01" * 160
-    await client.media_mic_queue.put(pcm)
+    await session.media_mic_queue.put(pcm)
 
-    original_get = client.media_mic_queue.get
-
+    original_get = session.media_mic_queue.get
     call_count = 0
+
     async def counting_get():
         nonlocal call_count
         result = await original_get()
         call_count += 1
-        client.recording = False
+        session.recording = False
         return result
 
-    client.media_mic_queue.get = counting_get
+    session.media_mic_queue.get = counting_get
 
-    await mic_ws_sender(client)
+    await mic_ws_sender(session)
 
     assert call_count == 1
-    client.ws.send_bytes.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_tts_sender_discards_when_unsubscribed():
-    client = _make_client(tts_subscribed=False)
+async def test_tts_sender_skips_when_no_subscribers():
+    """When no WS is subscribed, frames are drained but not sent."""
+    session = _make_session()  # no tts_subscribers
     mp3 = b"\xff\xfb\x90\x00" + b"\x00" * 100
-    await client.media_tts_queue.put(mp3)
+    await session.media_tts_queue.put(mp3)
 
-    original_get = client.media_tts_queue.get
-
+    original_get = session.media_tts_queue.get
     call_count = 0
+
     async def counting_get():
         nonlocal call_count
         result = await original_get()
         call_count += 1
-        client.recording = False
+        session.recording = False
         return result
 
-    client.media_tts_queue.get = counting_get
+    session.media_tts_queue.get = counting_get
 
-    await tts_ws_sender(client)
+    await tts_ws_sender(session)
 
     assert call_count == 1
-    client.ws.send_bytes.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_tts_fanout_sends_prefixed_mp3_to_satellite():
     sat = AsyncMock()
     sat.closed = False
-    client = MagicMock()
-    client.recording = True
+    session = ServerSession()
+    session.recording = True
     q = asyncio.Queue()
-    client.tts_queues = {"en": q}
-    client.tts_satellites = {"en": {sat}}
-    client.lock = asyncio.Lock()
+    session.tts_queues = {"en": q}
+    session.tts_satellites = {"en": {sat}}
     mp3 = b"\xff\xfb\x90" + b"\x00" * 20
 
     async def stop_later():
         await q.put(mp3)
         await asyncio.sleep(0.05)
-        client.recording = False
+        session.recording = False
 
-    await asyncio.gather(tts_fanout_loop(client, "en"), stop_later())
+    await asyncio.gather(tts_fanout_loop(session, "en"), stop_later())
     sat.send_bytes.assert_called_once()
     sent = sat.send_bytes.call_args[0][0]
     assert sent[0:1] == b"\x02"
@@ -140,20 +152,19 @@ async def test_tts_fanout_sends_prefixed_mp3_to_satellite():
 async def test_mic_original_fanout_sends_prefixed_pcm_to_satellite():
     sat = AsyncMock()
     sat.closed = False
-    client = MagicMock()
-    client.recording = True
+    session = ServerSession()
+    session.recording = True
     q = asyncio.Queue()
-    client.original_pcm_queue = q
-    client.original_audio_satellites = {sat}
-    client.lock = asyncio.Lock()
+    session.original_pcm_queue = q
+    session.original_audio_satellites = {sat}
     pcm = b"\x00\x01" * 160
 
     async def stop_later():
         await q.put(pcm)
         await asyncio.sleep(0.05)
-        client.recording = False
+        session.recording = False
 
-    await asyncio.gather(mic_original_fanout_loop(client), stop_later())
+    await asyncio.gather(mic_original_fanout_loop(session), stop_later())
     sat.send_bytes.assert_called_once()
     sent = sat.send_bytes.call_args[0][0]
     assert sent[0:1] == b"\x01"
@@ -161,22 +172,50 @@ async def test_mic_original_fanout_sends_prefixed_pcm_to_satellite():
 
 
 @pytest.mark.asyncio
-async def test_mic_sender_exits_on_ws_closed():
-    client = _make_client()
-    client.ws.closed = True
-    await client.media_mic_queue.put(b"\x00" * 320)
+async def test_mic_sender_broadcasts_to_multiple_subscribers():
+    """Multiple mic subscribers each receive the same prefixed frame."""
+    ws1 = _mock_ws()
+    ws2 = _mock_ws()
+    session = _make_session(mic_subscribers=[ws1, ws2])
+    pcm = b"\x00\x01" * 160
+    await session.media_mic_queue.put(pcm)
 
-    await mic_ws_sender(client)
+    call_count = 0
 
-    client.ws.send_bytes.assert_not_called()
+    async def stop_after_one(*_a, **_k):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            session.recording = False
+
+    ws1.send_bytes = AsyncMock(side_effect=stop_after_one)
+    ws2.send_bytes = AsyncMock(side_effect=stop_after_one)
+
+    await mic_ws_sender(session)
+
+    for ws in (ws1, ws2):
+        ws.send_bytes.assert_called_once()
+        sent = ws.send_bytes.call_args[0][0]
+        assert sent[0:1] == b"\x01"
+        assert sent[1:] == pcm
 
 
 @pytest.mark.asyncio
-async def test_tts_sender_exits_on_ws_closed():
-    client = _make_client()
-    client.ws.closed = True
-    await client.media_tts_queue.put(b"\x00" * 100)
+async def test_mic_sender_removes_closed_subscriber():
+    """A closed WS is removed from subscribers during fanout."""
+    ws_ok = _mock_ws()
+    ws_dead = _mock_ws(closed=True)
+    session = _make_session(mic_subscribers=[ws_ok, ws_dead])
+    pcm = b"\x00\x01" * 160
+    await session.media_mic_queue.put(pcm)
 
-    await tts_ws_sender(client)
+    async def stop(*_a, **_k):
+        session.recording = False
 
-    client.ws.send_bytes.assert_not_called()
+    ws_ok.send_bytes = AsyncMock(side_effect=stop)
+
+    await mic_ws_sender(session)
+
+    ws_ok.send_bytes.assert_called_once()
+    ws_dead.send_bytes.assert_not_called()
+    assert ws_dead not in session.mic_subscribers

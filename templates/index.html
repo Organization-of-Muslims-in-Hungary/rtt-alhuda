@@ -406,8 +406,8 @@
           <section class="stream-panel" id="network-status-panel" style="padding: 10px 14px;">
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 13px;">
               <div>
-                <div class="label" style="margin-bottom:2px">Primary WS</div>
-                <div id="net-ws-primary" style="font-weight:600; font-size:14px;">--</div>
+                <div class="label" style="margin-bottom:2px">Debug WS</div>
+                <div id="net-ws-debug" style="font-weight:600; font-size:14px;">--</div>
               </div>
               <div>
                 <div class="label" style="margin-bottom:2px">SSE Clients</div>
@@ -945,9 +945,10 @@
         try {
           const r = await fetch('/api/network-status');
           const d = await r.json();
-          const pri = document.getElementById('net-ws-primary');
-          pri.textContent = d.ws_primary ? '● Connected' : '○ Disconnected';
-          pri.style.color = d.ws_primary ? 'var(--ok)' : 'var(--error)';
+          const dbg = document.getElementById('net-ws-debug');
+          const dc = d.debug_ws_clients || 0;
+          dbg.textContent = dc > 0 ? `● ${dc} connected` : '○ None';
+          dbg.style.color = dc > 0 ? 'var(--ok)' : 'var(--muted)';
 
           document.getElementById('net-sse-count').textContent = d.sse_clients;
 
