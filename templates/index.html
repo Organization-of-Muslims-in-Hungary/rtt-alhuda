@@ -887,6 +887,37 @@
           ttsNextTime = 0;
         }
       });
+
+      // Poll /api/control/status to stay in sync with external start/stop
+      async function pollControlStatus() {
+        try {
+          const r = await fetch("/api/control/status");
+          const data = await r.json();
+          const isRecording = !!data.recording;
+
+          // Only sync UI if this client didn't initiate the change
+          if (isRecording && !requestedRecording) {
+            requestedRecording = true;
+            await ensureSocket();
+            updateUiForRecording(true);
+          } else if (!isRecording && requestedRecording && stopBtn.disabled) {
+            // Recording was stopped externally and we already show stopped state
+            requestedRecording = false;
+            updateUiForRecording(false);
+            resetAudioState();
+          } else if (!isRecording && startBtn.disabled) {
+            // Covers the case where UI thinks it's recording but server says no
+            requestedRecording = false;
+            updateUiForRecording(false);
+            resetAudioState();
+          }
+        } catch {
+          // Server unreachable — leave current state as-is
+        }
+      }
+
+      pollControlStatus();
+      setInterval(pollControlStatus, 3000);
     })();
   </script>
 </html>
