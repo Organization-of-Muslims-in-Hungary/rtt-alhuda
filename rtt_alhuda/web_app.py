@@ -242,9 +242,23 @@ async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
             primary.tts_satellites[lang].add(ws)
 
     try:
-        async for msg in ws:
-            if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
-                break
+        # Receive loop with periodic ping to detect silently-dropped clients.
+        # Without this, `async for msg in ws` blocks indefinitely when the
+        # remote end vanishes without sending a close frame, leaving the
+        # satellite in the fanout set forever (stale connection).
+        while not ws.closed:
+            try:
+                msg = await asyncio.wait_for(ws.receive(), timeout=20)
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR,
+                                WSMsgType.CLOSING):
+                    break
+            except asyncio.TimeoutError:
+                if ws.closed:
+                    break
+                try:
+                    await ws.ping()
+                except Exception:
+                    break
     finally:
         async with primary.lock:
             if lang == "ar":
@@ -282,10 +296,12 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     try:
         # Keep the connection alive with periodic SSE comments.
         # aiohttp cancels this coroutine when the client disconnects.
+        # 5 s is short enough to detect dead connections quickly.
         while True:
-            await asyncio.sleep(15)
+            await asyncio.sleep(5)
             await response.write(b": keepalive\n\n")
-    except (asyncio.CancelledError, ConnectionResetError, ConnectionError):
+    except (asyncio.CancelledError, ConnectionResetError, ConnectionError,
+            OSError, RuntimeError):
         pass
     finally:
         sse_set.discard(response)
@@ -486,6 +502,38 @@ async def server_control_handler(request: web.Request) -> web.Response:
     )
 
 
+async def network_status_handler(request: web.Request) -> web.Response:
+    """Return live connection counts for SSE and WebSocket clients."""
+
+    sse_set: set = request.app.get("text_sse_clients", set())
+    client: Optional[ClientState] = request.app.get("last_ws_client")
+
+    ws_satellites = {"ar": 0, "en": 0, "hu": 0}
+    primary_connected = False
+    recording = False
+
+    if client is not None:
+        primary_connected = not client.ws.closed
+        recording = client.recording
+        async with client.lock:
+            ws_satellites["ar"] = sum(
+                1 for w in client.original_audio_satellites if not w.closed
+            )
+            ws_satellites["en"] = sum(
+                1 for w in client.tts_satellites.get("en", ()) if not w.closed
+            )
+            ws_satellites["hu"] = sum(
+                1 for w in client.tts_satellites.get("hu", ()) if not w.closed
+            )
+
+    return web.json_response({
+        "sse_clients": len(sse_set),
+        "ws_primary": primary_connected,
+        "ws_recording": recording,
+        "ws_satellites": ws_satellites,
+    })
+
+
 async def lan_ipv4_handler(_request: web.Request) -> web.Response:
     """JSON for dev QR codes: ``{"ipv4": "<addr>" | null}`` — same-LAN as this server."""
 
@@ -500,6 +548,7 @@ def create_app() -> web.Application:
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
+    app.router.add_get("/api/network-status", network_status_handler)
     app.router.add_get("/stream", ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
     app.router.add_get("/stream/text", text_stream_handler) # Add this line

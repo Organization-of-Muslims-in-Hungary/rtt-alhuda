@@ -173,11 +173,18 @@ async def _process_chunk(
         # synchronous list() snapshot is safe in single-threaded asyncio.
         sse_data = {"ar": new_ar, "en": new_en, "hu": new_hu}
         sse_payload = f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n".encode("utf-8")
+        stale_sse: list = []
         for sse_resp in list(client.text_sse_clients):
             try:
                 await sse_resp.write(sse_payload)
-            except (ConnectionResetError, ConnectionError):
+            except Exception:
+                # Any error (ConnectionError, RuntimeError, OSError, …)
+                # means this SSE response is dead — remove without crashing
+                # the broadcast to remaining clients.
+                stale_sse.append(sse_resp)
                 client.text_sse_clients.discard(sse_resp)
+        if stale_sse:
+            print(f"[SSE] Dropped {len(stale_sse)} stale SSE client(s)")
 
         langs_content = {
             "ar": new_ar.strip(),
