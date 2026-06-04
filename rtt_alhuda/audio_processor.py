@@ -168,6 +168,17 @@ async def _process_chunk(
         }
         await send_transcription(client, message)
 
+        # Push to SSE /stream/text clients (same cycle, no polling delay).
+        # The set lives on the app and is shared across WS reconnections;
+        # synchronous list() snapshot is safe in single-threaded asyncio.
+        sse_data = {"ar": new_ar, "en": new_en, "hu": new_hu}
+        sse_payload = f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n".encode("utf-8")
+        for sse_resp in list(client.text_sse_clients):
+            try:
+                await sse_resp.write(sse_payload)
+            except (ConnectionResetError, ConnectionError):
+                client.text_sse_clients.discard(sse_resp)
+
         langs_content = {
             "ar": new_ar.strip(),
             "en": new_en.strip(),
