@@ -147,6 +147,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     http: ClientSession = request.app["http_client"]
     client = ClientState(ws=ws)
+    client.text_sse_clients = request.app["text_sse_clients"]
     request.app["last_ws_client"] = client
 
     await send_log(client, "WebSocket connected")
@@ -212,15 +213,19 @@ async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
 
     async def wait_active_primary() -> Optional[ClientState]:
+        ping_interval = 0
         while not ws.closed:
             primary: Optional[ClientState] = request.app.get("last_ws_client")
-            if primary is None or not primary.recording:
-                await asyncio.sleep(0.2)
-                continue
-            if lang == "ar":
-                return primary
-            if primary.tts_queues is not None:
-                return primary
+            if primary is not None and primary.recording:
+                if lang == "ar" or primary.tts_queues is not None:
+                    return primary
+
+            # Keep the WebSocket alive while waiting for a session.
+            ping_interval += 1
+            if ping_interval >= 50:          # ~10 s at 0.2 s sleeps
+                await ws.ping()
+                ping_interval = 0
+
             await asyncio.sleep(0.2)
         return None
 
@@ -252,9 +257,12 @@ async def tts_stream_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 async def text_stream_handler(request: web.Request) -> web.StreamResponse:
-    """Serve transcription and translation updates via Server-Sent Events (SSE)."""
-    
-    # 1. Set up the SSE headers with UTF-8 encoding
+    """Serve transcription and translation updates via Server-Sent Events (SSE).
+
+    Data is pushed directly from ``_process_chunk`` — no polling.
+    This handler just registers the response and keeps the connection alive.
+    """
+
     response = web.StreamResponse(
         status=200,
         reason='OK',
@@ -267,46 +275,20 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     )
     await response.prepare(request)
 
-    # 2. Get the active recording session
-    client = request.app.get("last_ws_client")
-    if not client:
-        log("No active recording session for SSE text stream")
-        return response
-
+    sse_set: set = request.app["text_sse_clients"]
+    sse_set.add(response)
     log("SSE text stream client connected")
 
     try:
-        # Keep track of where we are in the chunk history
-        last_chunk_count = len(client.chunk_history)
-
+        # Keep the connection alive with periodic SSE comments.
+        # aiohttp cancels this coroutine when the client disconnects.
         while True:
-            current_chunk_count = len(client.chunk_history)
-            
-            # If a new chunk was added by the audio_processor
-            if current_chunk_count > last_chunk_count:
-                latest_chunk = client.chunk_history[-1]
-                data = {
-                    "ar": latest_chunk.ar,
-                    "en": latest_chunk.en,
-                    "hu": latest_chunk.hu,
-                }
-                
-                # SSE format requires "data: <json>\n\n" encoded to bytes
-                # ensure_ascii=False prevents Arabic/Hungarian text from turning into \uXXXX codes
-                sse_payload = f"data: {json.dumps(data, ensure_ascii=False)}\n\n".encode("utf-8")
-                await response.write(sse_payload)
-                
-                # Update our tracker
-                last_chunk_count = current_chunk_count
-
-            # Sleep briefly to avoid blocking the event loop while polling
-            await asyncio.sleep(0.2)
-
-    except asyncio.CancelledError:
-        log("SSE text stream client disconnected (browser closed/refreshed)")
-    except ConnectionResetError:
-        log("SSE text stream connection reset")
+            await asyncio.sleep(15)
+            await response.write(b": keepalive\n\n")
+    except (asyncio.CancelledError, ConnectionResetError, ConnectionError):
+        pass
     finally:
+        sse_set.discard(response)
         log("SSE text stream client disconnected")
 
     return response
@@ -514,6 +496,7 @@ def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
     app = web.Application()
+    app["text_sse_clients"] = set()
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)

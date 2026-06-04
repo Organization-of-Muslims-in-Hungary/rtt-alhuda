@@ -54,3 +54,5 @@ class ClientState:
     original_pcm_queue: Optional[asyncio.Queue[bytes]] = None
     original_fanout_task: Optional[asyncio.Task] = None
     original_audio_satellites: set[web.WebSocketResponse] = field(default_factory=set)
+    # SSE /stream/text clients (pushed from _process_chunk, no polling).
+    text_sse_clients: set[web.StreamResponse] = field(default_factory=set)
