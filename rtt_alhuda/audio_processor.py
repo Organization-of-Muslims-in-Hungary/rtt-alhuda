@@ -18,7 +18,7 @@ from rtt_alhuda.config import (
     SAMPLE_RATE,
     SAMPLE_WIDTH_BYTES,
 )
-from rtt_alhuda.models import ChunkInfo, ClientState
+from rtt_alhuda.models import ChunkInfo, ServerSession
 from rtt_alhuda.transcription_openrouter import send_chunk_to_openrouter
 from rtt_alhuda.tts_openrouter import TtsLanguage, synthesize_speech_bytes
 from rtt_alhuda.web_protocol import send_log, send_transcription
@@ -69,31 +69,30 @@ class _CycleTiming:
         return " | ".join(parts)
 
 
-async def _enqueue_tts(client: ClientState, http: ClientSession, text: str) -> None:
-    """Fetch TTS audio and push one blob onto the legacy primary TTS queue."""
+async def _enqueue_tts(session: ServerSession, http: ClientSession, text: str) -> None:
+    """Fetch TTS audio and push one blob onto the debug TTS preview queue."""
 
-    q = client.media_tts_queue
+    q = session.media_tts_queue
     if q is None:
         return
     try:
-        lang: TtsLanguage = "hu" if client.media_tts_language == "hu" else "en"
+        lang: TtsLanguage = "hu" if session.media_tts_language == "hu" else "en"
         audio_bytes, _ = await synthesize_speech_bytes(http, text=text, language=lang)
         if audio_bytes:
             await q.put(audio_bytes)
     except Exception as exc:
-        if not client.ws.closed:
-            await send_log(client, f"TTS error: {exc}", "error")
+        await send_log(session, f"TTS error: {exc}", "error")
 
 
 async def _enqueue_tts_for_lang(
-    client: ClientState,
+    session: ServerSession,
     http: ClientSession,
     text: str,
     lang: str,
 ) -> None:
     """Synth one chunk for satellite ``lang`` queue (en | hu)."""
 
-    queues = client.tts_queues
+    queues = session.tts_queues
     if not queues or lang not in queues:
         return
     q = queues[lang]
@@ -105,12 +104,11 @@ async def _enqueue_tts_for_lang(
         if audio_bytes:
             await q.put(audio_bytes)
     except Exception as exc:
-        if not client.ws.closed:
-            await send_log(client, f"TTS ({lang}) error: {exc}", "error")
+        await send_log(session, f"TTS ({lang}) error: {exc}", "error")
 
 
 async def _process_chunk(
-    client: ClientState,
+    session: ServerSession,
     http: ClientSession,
     wav_b64: str,
     new_audio_start_sample: int,
@@ -136,8 +134,8 @@ async def _process_chunk(
         new_en = str(result.get("en", ""))
         new_hu = str(result.get("hu", ""))
 
-        async with client.lock:
-            client.chunk_history.append(
+        async with session.lock:
+            session.chunk_history.append(
                 ChunkInfo(
                     start_sample=new_audio_start_sample,
                     end_sample=new_audio_end_sample,
@@ -166,18 +164,22 @@ async def _process_chunk(
             "latencyMs": timing.api_ms,
             "timing": timing.snapshot(),
         }
-        await send_transcription(client, message)
+        await send_transcription(session, message)
 
         # Push to SSE /stream/text clients (same cycle, no polling delay).
-        # The set lives on the app and is shared across WS reconnections;
+        # The set lives on the session and is shared across WS reconnections;
         # synchronous list() snapshot is safe in single-threaded asyncio.
         sse_data = {"ar": new_ar, "en": new_en, "hu": new_hu}
         sse_payload = f"data: {json.dumps(sse_data, ensure_ascii=False)}\n\n".encode("utf-8")
-        for sse_resp in list(client.text_sse_clients):
+        stale_sse: list = []
+        for sse_resp in list(session.text_sse_clients):
             try:
                 await sse_resp.write(sse_payload)
-            except (ConnectionResetError, ConnectionError):
-                client.text_sse_clients.discard(sse_resp)
+            except Exception:
+                stale_sse.append(sse_resp)
+                session.text_sse_clients.discard(sse_resp)
+        if stale_sse:
+            print(f"[SSE] Dropped {len(stale_sse)} stale SSE client(s)")
 
         langs_content = {
             "ar": new_ar.strip(),
@@ -185,63 +187,63 @@ async def _process_chunk(
             "hu": new_hu.strip(),
         }
 
-        # Legacy primary /stream: one TTS stream from dropdown (en | hu)
+        # Debug audio preview: one TTS stream for subscribed debug WS clients
         tts_text = ""
-        if client.media_tts_language == "hu":
+        if session.media_tts_language == "hu":
             tts_text = langs_content["hu"]
         else:
             tts_text = langs_content["en"]
 
         if (
             tts_text
-            and client.media_tts_queue is not None
-            and client.ws_tts_subscribed
+            and session.media_tts_queue is not None
+            and session.tts_subscribers
         ):
             asyncio.create_task(
-                _enqueue_tts(client, http, tts_text),
+                _enqueue_tts(session, http, tts_text),
                 name="tts-enqueue",
             )
 
-        async with client.lock:
+        async with session.lock:
             satellite_langs = [
                 lang
                 for lang in ("en", "hu")
                 if langs_content.get(lang)
-                and len(client.tts_satellites.get(lang, ())) > 0
+                and len(session.tts_satellites.get(lang, ())) > 0
             ]
         for lang in satellite_langs:
             asyncio.create_task(
-                _enqueue_tts_for_lang(client, http, langs_content[lang], lang),
+                _enqueue_tts_for_lang(session, http, langs_content[lang], lang),
                 name=f"tts-satellite-{lang}",
             )
 
     except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
         await send_log(
-            client,
+            session,
             f"Error processing chunk ({type(exc).__name__}): {exc} "
             "(check server terminal for [OpenRouter] lines)",
             "error",
         )
     except Exception as exc:
         await send_log(
-            client,
+            session,
             f"Unexpected error processing chunk ({type(exc).__name__}): {exc}\n{traceback.format_exc()}",
             "error",
         )
 
 
-async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
+async def process_audio_loop(session: ServerSession, http: ClientSession) -> None:
     """Periodically convert buffered audio into transcript and translation updates."""
 
     await send_log(
-        client,
+        session,
         f"Audio processing started (every {PROCESSING_INTERVAL_SECONDS}s, dynamic window)",
     )
 
     try:
         next_cycle_at = time.monotonic() + PROCESSING_INTERVAL_SECONDS
 
-        while client.recording and not client.ws.closed:
+        while session.recording:
             t = _CycleTiming()
 
             # --- Phase: cadence wait (included in wall time) ---
@@ -257,14 +259,14 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
 
             # --- Phase: buffer copy ---
             _t0 = time.monotonic()
-            async with client.lock:
-                end_sample = client.total_samples_written
+            async with session.lock:
+                end_sample = session.total_samples_written
                 chunk_pcm = b""
                 new_audio_pcm = b""
                 total_samples = 0
 
                 if CONTEXT_CHUNK_COUNT > 0:
-                    history_to_include = client.chunk_history[-CONTEXT_CHUNK_COUNT:]
+                    history_to_include = session.chunk_history[-CONTEXT_CHUNK_COUNT:]
                 else:
                     history_to_include = []
 
@@ -280,12 +282,12 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                         c.hu for c in history_to_include if c.hu
                     ).strip()
                 else:
-                    past_start_sample = client.last_chunk_end_sample
+                    past_start_sample = session.last_chunk_end_sample
                     original_ar = ""
                     original_en = ""
                     original_hu = ""
 
-                new_audio_start_sample = client.last_chunk_end_sample
+                new_audio_start_sample = session.last_chunk_end_sample
                 new_audio_end_sample = end_sample
 
                 new_samples_count = new_audio_end_sample - new_audio_start_sample
@@ -294,20 +296,20 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 if new_samples_count < int(SAMPLE_RATE * PROCESSING_INTERVAL_SECONDS):
                     pass
                 else:
-                    start_sample = max(client.buffer_start_sample, past_start_sample)
+                    start_sample = max(session.buffer_start_sample, past_start_sample)
 
-                    start_offset_samples = start_sample - client.buffer_start_sample
-                    end_offset_samples = end_sample - client.buffer_start_sample
+                    start_offset_samples = start_sample - session.buffer_start_sample
+                    end_offset_samples = end_sample - session.buffer_start_sample
 
                     start_byte = start_offset_samples * bytes_per_frame
                     end_byte = end_offset_samples * bytes_per_frame
-                    chunk_pcm = bytes(client.pcm_buffer[start_byte:end_byte])
+                    chunk_pcm = bytes(session.pcm_buffer[start_byte:end_byte])
 
                     # VAD checks only the NEW audio (since last chunk), not context
-                    safe_new_audio_start = max(client.buffer_start_sample, new_audio_start_sample)
-                    new_start_offset = safe_new_audio_start - client.buffer_start_sample
+                    safe_new_audio_start = max(session.buffer_start_sample, new_audio_start_sample)
+                    new_start_offset = safe_new_audio_start - session.buffer_start_sample
                     new_start_byte = new_start_offset * bytes_per_frame
-                    new_audio_pcm = bytes(client.pcm_buffer[new_start_byte:end_byte])
+                    new_audio_pcm = bytes(session.pcm_buffer[new_start_byte:end_byte])
 
                     total_samples = end_sample - start_sample
 
@@ -331,16 +333,16 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 t.skip_reason = "silent_vad"
                 t.audio_duration_ms = int((total_samples / SAMPLE_RATE) * 1000)
                 await send_log(
-                    client,
+                    session,
                     f"Silent audio chunk — skipped (wall {t.cycle_total_ms}ms, vad {t.vad_ms}ms)",
                     "info",
                     timing=t.snapshot(),
                 )
-                async with client.lock:
-                    client.last_chunk_end_sample = new_audio_end_sample
+                async with session.lock:
+                    session.last_chunk_end_sample = new_audio_end_sample
                     # Add an empty chunk to history so the context window anchor moves forward.
                     # Without this, the anchor gets stuck and the 'context' audio window stretches endlessly.
-                    client.chunk_history.append(
+                    session.chunk_history.append(
                         ChunkInfo(
                             start_sample=new_audio_start_sample,
                             end_sample=new_audio_end_sample,
@@ -362,7 +364,7 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
             request_started_at = time.monotonic()
 
             await _process_chunk(
-                client,
+                session,
                 http,
                 wav_b64,
                 new_audio_start_sample,
@@ -374,12 +376,12 @@ async def process_audio_loop(client: ClientState, http: ClientSession) -> None:
                 timing=t,
             )
 
-            async with client.lock:
-                client.last_chunk_end_sample = new_audio_end_sample
+            async with session.lock:
+                session.last_chunk_end_sample = new_audio_end_sample
 
             # Keep a request-start-based cadence: every PROCESSING_INTERVAL_SECONDS
             # from request start, or immediately after slower responses.
             next_cycle_at = request_started_at + PROCESSING_INTERVAL_SECONDS
 
     finally:
-        await send_log(client, "Audio processing stopped")
+        await send_log(session, "Audio processing stopped")

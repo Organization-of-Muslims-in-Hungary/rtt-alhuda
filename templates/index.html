@@ -402,6 +402,27 @@
           </section>
         </section>
         <section>
+          <h2 class="panel-title" style="margin-top: 12px">Network Status</h2>
+          <section class="stream-panel" id="network-status-panel" style="padding: 10px 14px;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 13px;">
+              <div>
+                <div class="label" style="margin-bottom:2px">Debug WS</div>
+                <div id="net-ws-debug" style="font-weight:600; font-size:14px;">--</div>
+              </div>
+              <div>
+                <div class="label" style="margin-bottom:2px">SSE Clients</div>
+                <div id="net-sse-count" style="font-weight:600; font-size:14px;">--</div>
+              </div>
+              <div>
+                <div class="label" style="margin-bottom:2px">Recording</div>
+                <div id="net-recording" style="font-weight:600; font-size:14px;">--</div>
+              </div>
+              <div>
+                <div class="label" style="margin-bottom:2px">WS Satellites</div>
+                <div id="net-ws-satellites" style="font-size:13px; font-family: Consolas, monospace;">--</div>
+              </div>
+            </div>
+          </section>
           <h2 class="panel-title" style="margin-top: 12px">Network Requests</h2>
           <section
             class="request-list"
@@ -887,6 +908,61 @@
           ttsNextTime = 0;
         }
       });
+
+      // Poll /api/control/status to stay in sync with external start/stop
+      async function pollControlStatus() {
+        try {
+          const r = await fetch("/api/control/status");
+          const data = await r.json();
+          const isRecording = !!data.recording;
+
+          // Only sync UI if this client didn't initiate the change
+          if (isRecording && !requestedRecording) {
+            requestedRecording = true;
+            await ensureSocket();
+            updateUiForRecording(true);
+          } else if (!isRecording && requestedRecording && stopBtn.disabled) {
+            // Recording was stopped externally and we already show stopped state
+            requestedRecording = false;
+            updateUiForRecording(false);
+            resetAudioState();
+          } else if (!isRecording && startBtn.disabled) {
+            // Covers the case where UI thinks it's recording but server says no
+            requestedRecording = false;
+            updateUiForRecording(false);
+            resetAudioState();
+          }
+        } catch {
+          // Server unreachable — leave current state as-is
+        }
+      }
+
+      pollControlStatus();
+      setInterval(pollControlStatus, 3000);
+
+      // ── Network Status panel polling ─────────────────────────────
+      async function pollNetworkStatus() {
+        try {
+          const r = await fetch('/api/network-status');
+          const d = await r.json();
+          const dbg = document.getElementById('net-ws-debug');
+          const dc = d.debug_ws_clients || 0;
+          dbg.textContent = dc > 0 ? `● ${dc} connected` : '○ None';
+          dbg.style.color = dc > 0 ? 'var(--ok)' : 'var(--muted)';
+
+          document.getElementById('net-sse-count').textContent = d.sse_clients;
+
+          const rec = document.getElementById('net-recording');
+          rec.textContent = d.ws_recording ? '● Recording' : '○ Idle';
+          rec.style.color = d.ws_recording ? 'var(--ok)' : 'var(--muted)';
+
+          const sat = d.ws_satellites;
+          document.getElementById('net-ws-satellites').textContent =
+            `ar:${sat.ar}  en:${sat.en}  hu:${sat.hu}`;
+        } catch { /* server unreachable */ }
+      }
+      pollNetworkStatus();
+      setInterval(pollNetworkStatus, 3000);
     })();
   </script>
 </html>
