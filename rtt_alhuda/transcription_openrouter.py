@@ -51,7 +51,7 @@ async def send_chunk_to_openrouter(
     ══ STRICT RULES — violating any rule is a critical failure ══
 
     RULE 1 — NO REPETITION:
-    The audio chunk will contain overlapped content, Most of the the audio is context.
+    The audio chunk will contain overlapped content, most of the audio is context.
     Carefully find where the context_ar ends inside the audio.
     Output ONLY what comes after that point.
     You should not include phrases in transcription that are already in the context.
@@ -69,7 +69,6 @@ async def send_chunk_to_openrouter(
     audio: "السلام عليكم"
     output_ar: "السلام عليكم" 
     
-    Do NOT add "ورحمة الله" even if you know it is likely to come next (This is really a critical failure)
     Do NOT add "ورحمة الله" even if you know it is likely to come next (This is really a critical failure).
 
 
@@ -81,7 +80,7 @@ async def send_chunk_to_openrouter(
 
     RULE 4 — INCOMPLETE LAST WORD:
     Do NOT include the last incomplete word at the end of the chunk.
-    Incomplete audio words at the end of the chunk will be repeated in the next chunk, so do not incude if you had a bit of doubt about them being incomplete.
+    Do not include words at the end of a chunk if they may be incomplete, because incomplete words will be repeated in the next chunk.
     Example:
     "audio: "السلام عليكم ورح"
     output_ar: "السلام عليكم"
@@ -94,8 +93,8 @@ async def send_chunk_to_openrouter(
     Example of CORRECT output: "بسم الله الرحمن الرحيم"
 
     RULE 6 — NOTES:
-    Add quatation and colons for sayings and Quranic scripts or Hadiths. And important to not close the qoute before it ends, sometimes the end is in next chunk.
-    The word "الله" is should translate to "Allah", not God. The word "إله" is "God".
+    Add quotation marks and colons for sayings, Quranic verses, and Hadiths. It is important not to close the quote before it ends, as the end may be in the next chunk.
+    The word "الله" should be translated as "Allah", not "God". The word "إله" is "God".
     Example:
     "قال الله تعالى: "..." " -> "Allah Almighty said: "..." "
     
