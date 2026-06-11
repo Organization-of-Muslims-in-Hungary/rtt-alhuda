@@ -51,9 +51,10 @@ async def send_chunk_to_openrouter(
     ══ STRICT RULES — violating any rule is a critical failure ══
 
     RULE 1 — NO REPETITION:
-    The audio chunk will contain overlapped content, you should not output it twice.
+    The audio chunk will contain overlapped content, most of the audio is context.
     Carefully find where the context_ar ends inside the audio.
     Output ONLY what comes after that point.
+    You should not include phrases in transcription that are already in the context.
     If every word in the audio is already covered by context_ar, return empty strings.
     Example:
     context_ar: "السلام عليكم"
@@ -68,21 +69,22 @@ async def send_chunk_to_openrouter(
     audio: "السلام عليكم"
     output_ar: "السلام عليكم" 
     
-    Do NOT add "ورحمة الله" even if you know it is likely to come next (This is really a critical failure)
+    Do NOT add "ورحمة الله" even if you know it is likely to come next (This is really a critical failure).
 
 
     RULE 3 — SILENCE / NOISE:
     If the audio is silent, noisy, contains only elongated breath/vocal sounds with no
     new discrete words, or is too unclear — return EXACTLY:
     {"ar": "", "en": "", "hu": ""}
+    Chatty responses are forbidden, if the context and/or the audio is silence, respond with empty payload.
 
     RULE 4 — INCOMPLETE LAST WORD:
-    Do NOT include the last incomplete word/syllable at the end of the chunk.
-    Incomplete audio words/syllables at the end of the chunk will be repeated in the next chunk, so do not incude if you had a bit of doubt about them being incomplete.
+    Do NOT include the last incomplete word at the end of the chunk.
+    Do not include words at the end of a chunk if they may be incomplete, because incomplete words will be repeated in the next chunk.
     Example:
     "audio: "السلام عليكم ورح"
     output_ar: "السلام عليكم"
-    If the audio ends with "السلام عليكم ورح", do NOT output "ورحمة الله" — only output what you are sure is complete: "السلام عليكم" and omit the incomplete "ورح".
+    Do NOT output "ورح" or "ورحمة الله" — OMIT the incomplete "ورح" and only output what you are sure is complete: "السلام عليكم".
 
     RULE 5 — SCRIPT:
     "ar" MUST be written in Arabic script (Unicode Arabic letters: ا ب ت ...).
@@ -90,6 +92,12 @@ async def send_chunk_to_openrouter(
     Example of WRONG output: "Bismillahirrahmanirrahim"
     Example of CORRECT output: "بسم الله الرحمن الرحيم"
 
+    RULE 6 — NOTES:
+    Add quotation marks and colons for sayings, Quranic verses, and Hadiths. It is important not to close the quote before it ends, as the end may be in the next chunk.
+    The word "الله" should be translated as "Allah", not "God". The word "إله" is "God".
+    Example:
+    "قال الله تعالى: "..." " -> "Allah Almighty said: "..." "
+    
     """
     body = {
         "model": OPENROUTER_MODEL,
