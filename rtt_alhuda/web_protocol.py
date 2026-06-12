@@ -44,3 +44,22 @@ async def send_transcription(session: ServerSession, message: dict) -> None:
     """Broadcast a transcription update to all debug WebSocket clients."""
 
     await _broadcast(session, json.dumps(message))
+
+
+async def send_sse_control(session: ServerSession, action: str, **fields) -> None:
+    """Broadcast a named ``event: control`` SSE message to all /stream/text clients.
+
+    The frontend listens with ``evtSource.addEventListener('control', ...)``,
+    keeping control events separate from the default transcription data stream.
+    """
+
+    payload = {"action": action, **fields}
+    sse_msg = f"event: control\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+    stale: list = []
+    for sse_resp in list(session.text_sse_clients):
+        try:
+            await sse_resp.write(sse_msg)
+        except Exception:
+            stale.append(sse_resp)
+    for resp in stale:
+        session.text_sse_clients.discard(resp)

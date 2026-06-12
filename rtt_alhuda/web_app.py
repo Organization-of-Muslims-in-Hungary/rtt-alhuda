@@ -20,7 +20,7 @@ from rtt_alhuda.audio_stream_ws import (
 from rtt_alhuda.config import REPO_ROOT
 from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ServerSession
-from rtt_alhuda.web_protocol import send_log
+from rtt_alhuda.web_protocol import send_log, send_sse_control
 from rtt_alhuda.openrouter_debug import log_startup_summary
 
 
@@ -413,37 +413,49 @@ async def control_handler(request: web.Request) -> web.Response:
 
 
 async def browser_handler(request: web.Request) -> web.Response:
-    """Control the Chromium kiosk browser from the phone.
+    """Control the display from the phone.
 
-    Actions:
-      navigate/<page>  — open a named page  (app | tv | operator | control)
-      exit-kiosk       — reopen without --kiosk flag (windowed, escapable)
-      kiosk            — reopen in kiosk/fullscreen mode
-      refresh          — reload current page via xdotool Ctrl+R
-      close            — kill the browser
-      language/<lang>  — broadcast lang_switch to the active WebSocket client
+    SSE-based (OS-independent — works on any TV/browser):
+      navigate/<page>  — tell SSE clients to switch view  (app | tv | operator | control)
+      refresh          — tell SSE clients to reload the page
+      language/<lang>  — set TTS language + tell SSE clients to switch display language
+
+    OS-level (Pi-specific, requires Linux + X11):
+      exit-kiosk       — reopen Chromium without --kiosk flag
+      kiosk            — reopen Chromium in kiosk/fullscreen mode
+      close            — kill the browser process
     """
     action = request.match_info.get("action", "")
+    session = _get_session(request)
+
+    # ── SSE-based actions (OS-independent) ────────────────────────
+
+    if action.startswith("navigate/"):
+        page_key = action.split("/", 1)[1]
+        if page_key not in _BROWSER_PAGES:
+            return web.json_response(
+                {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
+            )
+        await send_sse_control(session, "navigate", page=page_key)
+        return web.json_response({"ok": True, "action": f"navigate:{page_key}"})
+
+    if action == "refresh":
+        await send_sse_control(session, "refresh")
+        return web.json_response({"ok": True, "action": "refresh"})
+
+    if action.startswith("language/"):
+        lang = action.split("/", 1)[1]
+        session.media_tts_language = lang
+        await send_sse_control(session, "lang_switch", lang=lang)
+        return web.json_response({"ok": True, "lang": lang})
+
+    # ── OS-level actions (Pi-specific) ────────────────────────────
+
     browser_bin = (
         "chromium-browser"
         if Path("/usr/bin/chromium-browser").exists()
         else "chromium"
     )
-
-    if action.startswith("navigate/"):
-        page_key = action.split("/", 1)[1]
-        url = _BROWSER_PAGES.get(page_key)
-        if not url:
-            return web.json_response(
-                {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
-            )
-        await _run("pkill -f chromium 2>/dev/null; sleep 1")
-        await _run(
-            f"sudo -u pi DISPLAY=:0 XAUTHORITY=/home/pi/.Xauthority "
-            f"{browser_bin} --kiosk --noerrdialogs --disable-infobars "
-            f"--no-first-run '{url}' &"
-        )
-        return web.json_response({"ok": True, "action": f"navigate:{url}"})
 
     if action == "exit-kiosk":
         url = _BROWSER_PAGES["app"]
@@ -464,30 +476,9 @@ async def browser_handler(request: web.Request) -> web.Response:
         )
         return web.json_response({"ok": True, "action": "kiosk"})
 
-    if action == "refresh":
-        rc, out = await _run(
-            "xdotool search --onlyvisible --class chromium "
-            "key --clearmodifiers ctrl+r"
-        )
-        return web.json_response({"ok": rc == 0, "action": "refresh", "detail": out})
-
     if action == "close":
         await _run("pkill -f chromium 2>/dev/null")
         return web.json_response({"ok": True, "action": "close"})
-
-    if action.startswith("language/"):
-        lang = action.split("/", 1)[1]
-        session = _get_session(request)
-        session.media_tts_language = lang
-        # Notify all connected debug WS clients about the language switch.
-        payload = json.dumps({"type": "lang_switch", "lang": lang})
-        for ws in list(session.debug_ws_clients):
-            if not ws.closed:
-                try:
-                    await ws.send_str(payload)
-                except (ConnectionResetError, ConnectionError, RuntimeError):
-                    pass
-        return web.json_response({"ok": True, "lang": lang})
 
     return web.json_response(
         {"ok": False, "reason": "unknown browser action"}, status=400
