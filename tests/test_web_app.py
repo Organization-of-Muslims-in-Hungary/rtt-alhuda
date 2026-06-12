@@ -6,9 +6,16 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+from rtt_alhuda import db as client_db
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_app import create_app, start_recording, stop_recording
-from rtt_alhuda.web_protocol import send_log, send_transcription
+from rtt_alhuda.web_protocol import send_log, send_sse_control, send_transcription
+
+
+@pytest.fixture(autouse=True)
+def _isolate_db(tmp_path, monkeypatch):
+    """Point DB_PATH to a fresh temp file so each test gets its own database."""
+    monkeypatch.setattr(client_db, "DB_PATH", tmp_path / "test.db")
 
 
 # ── Route registration tests ────────────────────────────────────────────────
@@ -246,4 +253,282 @@ async def test_debug_ws_disconnect_does_not_clear_subscribers() -> None:
     # ws2 is still subscribed
     assert ws2 in session.mic_subscribers
     assert ws2 in session.debug_ws_clients
+
+
+# ── Targeted SSE control tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_send_sse_control_broadcasts_to_all() -> None:
+    """Without target_client_id, all SSE clients receive the message."""
+    sse1 = AsyncMock()
+    sse2 = AsyncMock()
+    session = ServerSession()
+    session.text_sse_clients = {sse1, sse2}
+
+    await send_sse_control(session, "refresh")
+
+    sse1.write.assert_called_once()
+    sse2.write.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_send_sse_control_targets_single_client() -> None:
+    """With target_client_id, only that client's SSE gets the message."""
+    sse_target = AsyncMock()
+    sse_other = AsyncMock()
+    session = ServerSession()
+    session.text_sse_clients = {sse_target, sse_other}
+    session.client_sse_map = {"client-1": sse_target, "client-2": sse_other}
+
+    await send_sse_control(session, "navigate", target_client_id="client-1", page="tv")
+
+    sse_target.write.assert_called_once()
+    sse_other.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_sse_control_target_missing_is_noop() -> None:
+    """Targeting a non-existent client does nothing, no crash."""
+    sse = AsyncMock()
+    session = ServerSession()
+    session.text_sse_clients = {sse}
+    session.client_sse_map = {"client-1": sse}
+
+    await send_sse_control(session, "refresh", target_client_id="no-such-client")
+
+    sse.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_send_sse_control_removes_broken_target() -> None:
+    """A broken targeted SSE connection is cleaned up."""
+    sse_broken = AsyncMock()
+    sse_broken.write.side_effect = ConnectionResetError
+    session = ServerSession()
+    session.text_sse_clients = {sse_broken}
+    session.client_sse_map = {"client-1": sse_broken}
+
+    await send_sse_control(session, "refresh", target_client_id="client-1")
+
+    assert "client-1" not in session.client_sse_map
+    assert sse_broken not in session.text_sse_clients
+
+
+@pytest.mark.asyncio
+async def test_send_sse_control_broadcast_cleans_broken() -> None:
+    """Broadcast removes broken SSE clients and their client_sse_map entry."""
+    sse_ok = AsyncMock()
+    sse_broken = AsyncMock()
+    sse_broken.write.side_effect = OSError
+    session = ServerSession()
+    session.text_sse_clients = {sse_ok, sse_broken}
+    session.client_sse_map = {"alive": sse_ok, "dead": sse_broken}
+
+    await send_sse_control(session, "refresh")
+
+    assert sse_broken not in session.text_sse_clients
+    assert "dead" not in session.client_sse_map
+    assert sse_ok in session.text_sse_clients
+    assert "alive" in session.client_sse_map
+
+
+# ── Client SSE map on ServerSession ──────────────────────────────────────────
+
+
+def test_session_has_client_sse_map() -> None:
+    session = ServerSession()
+    assert isinstance(session.client_sse_map, dict)
+    assert len(session.client_sse_map) == 0
+
+
+# ── Client API integration tests ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_client_register_creates_new() -> None:
+    """POST /api/clients/register with no client_id creates a new client."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/clients/register",
+            json={"name": "TestTV", "screen_w": 1920, "screen_h": 1080},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["client"]["name"] == "TestTV"
+        assert data["client"]["device_type"] == "screen"
+        assert len(data["client"]["id"]) == 12
+
+
+@pytest.mark.asyncio
+async def test_client_register_reidentifies() -> None:
+    """Re-registering with the same client_id updates instead of duplicating."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r1 = await client.post(
+            "/api/clients/register",
+            json={"name": "V1", "screen_w": 100, "screen_h": 100},
+        )
+        cid = (await r1.json())["client"]["id"]
+
+        r2 = await client.post(
+            "/api/clients/register",
+            json={"client_id": cid, "name": "V2", "screen_w": 1920, "screen_h": 1080},
+        )
+        d2 = await r2.json()
+        assert d2["client"]["id"] == cid
+        assert d2["client"]["name"] == "V2"
+        assert d2["client"]["device_type"] == "screen"
+
+
+@pytest.mark.asyncio
+async def test_client_list_empty() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/clients")
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["clients"] == []
+
+
+@pytest.mark.asyncio
+async def test_client_list_shows_registered() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        await client.post(
+            "/api/clients/register",
+            json={"name": "A", "screen_w": 100, "screen_h": 100},
+        )
+        await client.post(
+            "/api/clients/register",
+            json={"name": "B", "screen_w": 1920, "screen_h": 1080},
+        )
+        resp = await client.get("/api/clients")
+        data = await resp.json()
+        assert len(data["clients"]) == 2
+        names = {c["name"] for c in data["clients"]}
+        assert names == {"A", "B"}
+
+
+@pytest.mark.asyncio
+async def test_client_list_connected_field() -> None:
+    """Clients in client_sse_map show connected=True, others False."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post(
+            "/api/clients/register",
+            json={"name": "Online", "screen_w": 100, "screen_h": 100},
+        )
+        cid = (await r.json())["client"]["id"]
+        # Simulate SSE connection by putting a mock in client_sse_map
+        app["session"].client_sse_map[cid] = AsyncMock()
+
+        resp = await client.get("/api/clients")
+        data = await resp.json()
+        c = next(c for c in data["clients"] if c["id"] == cid)
+        assert c["connected"] is True
+
+
+@pytest.mark.asyncio
+async def test_client_rename() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post(
+            "/api/clients/register",
+            json={"name": "Old", "screen_w": 100, "screen_h": 100},
+        )
+        cid = (await r.json())["client"]["id"]
+
+        resp = await client.post(
+            f"/api/clients/{cid}/rename", json={"name": "New"}
+        )
+        assert resp.status == 200
+        assert (await resp.json())["ok"] is True
+
+        listing = await (await client.get("/api/clients")).json()
+        assert listing["clients"][0]["name"] == "New"
+
+
+@pytest.mark.asyncio
+async def test_client_rename_nonexistent() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post(
+            "/api/clients/no-such/rename", json={"name": "X"}
+        )
+        assert resp.status == 404
+
+
+@pytest.mark.asyncio
+async def test_client_delete() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        r = await client.post(
+            "/api/clients/register",
+            json={"name": "Gone", "screen_w": 100, "screen_h": 100},
+        )
+        cid = (await r.json())["client"]["id"]
+
+        resp = await client.delete(f"/api/clients/{cid}")
+        assert resp.status == 200
+        assert (await resp.json())["ok"] is True
+
+        listing = await (await client.get("/api/clients")).json()
+        assert len(listing["clients"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_client_delete_nonexistent() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.delete("/api/clients/no-such")
+        assert resp.status == 404
+
+
+# ── Browser targeting integration tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_browser_navigate_with_target_param() -> None:
+    """GET /api/browser/navigate/tv?target=X returns ok with the target echoed."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/browser/navigate/tv?target=client-42")
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["target"] == "client-42"
+
+
+@pytest.mark.asyncio
+async def test_browser_navigate_without_target() -> None:
+    """Without ?target, the response has target=null (broadcast)."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/browser/navigate/app")
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["target"] is None
+
+
+@pytest.mark.asyncio
+async def test_browser_refresh_with_target() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/browser/refresh?target=abc")
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["target"] == "abc"
+
+
+@pytest.mark.asyncio
+async def test_browser_language_with_target() -> None:
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/browser/language/en?target=client-7")
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["target"] == "client-7"
+        assert data["lang"] == "en"
 
