@@ -46,15 +46,32 @@ async def send_transcription(session: ServerSession, message: dict) -> None:
     await _broadcast(session, json.dumps(message))
 
 
-async def send_sse_control(session: ServerSession, action: str, **fields) -> None:
-    """Broadcast a named ``event: control`` SSE message to all /stream/text clients.
+async def send_sse_control(
+    session: ServerSession,
+    action: str,
+    *,
+    target_client_id: Optional[str] = None,
+    **fields,
+) -> None:
+    """Send a named ``event: control`` SSE message.
 
-    The frontend listens with ``evtSource.addEventListener('control', ...)``,
-    keeping control events separate from the default transcription data stream.
+    If *target_client_id* is given, sends only to that client's SSE connection.
+    Otherwise broadcasts to all /stream/text clients (legacy behaviour).
     """
 
     payload = {"action": action, **fields}
     sse_msg = f"event: control\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
+
+    if target_client_id:
+        sse_resp = session.client_sse_map.get(target_client_id)
+        if sse_resp:
+            try:
+                await sse_resp.write(sse_msg)
+            except Exception:
+                session.client_sse_map.pop(target_client_id, None)
+                session.text_sse_clients.discard(sse_resp)
+        return
+
     stale: list = []
     for sse_resp in list(session.text_sse_clients):
         try:
@@ -63,3 +80,8 @@ async def send_sse_control(session: ServerSession, action: str, **fields) -> Non
             stale.append(sse_resp)
     for resp in stale:
         session.text_sse_clients.discard(resp)
+        # Also clean up client_sse_map
+        for cid, r in list(session.client_sse_map.items()):
+            if r is resp:
+                del session.client_sse_map[cid]
+                break

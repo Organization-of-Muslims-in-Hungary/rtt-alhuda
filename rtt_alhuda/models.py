@@ -64,3 +64,5 @@ class ServerSession:
     original_audio_satellites: set[web.WebSocketResponse] = field(default_factory=set)
     # SSE /stream/text clients (app-level, never tied to any WebSocket).
     text_sse_clients: set[web.StreamResponse] = field(default_factory=set)
+    # Per-client SSE mapping: client_id -> StreamResponse (for targeted control).
+    client_sse_map: dict[str, web.StreamResponse] = field(default_factory=dict)

@@ -107,6 +107,43 @@
 
       .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; direction: rtl; }
 
+      /* Client list */
+      .client-list { display: flex; flex-direction: column; gap: 8px; }
+      .client-item {
+        display: flex; align-items: center; gap: 10px;
+        padding: 10px 12px; border-radius: 10px;
+        background: rgba(255,255,255,.03);
+        border: 1px solid var(--border);
+        transition: border-color .2s; direction: rtl;
+      }
+      .client-item:hover { border-color: var(--gold); }
+      .client-item.selected { border-color: var(--gold); background: rgba(212,168,67,.08); }
+      .client-dot {
+        width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+      }
+      .client-dot.online  { background: var(--green); }
+      .client-dot.offline { background: var(--muted); }
+      .client-info { flex: 1; min-width: 0; }
+      .client-name {
+        font-size: 14px; font-weight: 700;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      .client-meta { font-size: 11px; color: var(--muted); }
+      .client-actions { display: flex; gap: 4px; }
+      .client-actions button {
+        padding: 4px 8px; font-size: 11px; border-radius: 6px;
+        border: 1px solid var(--border); background: transparent;
+        color: var(--muted); cursor: pointer; font-family: inherit;
+      }
+      .client-actions button:hover { color: var(--gold); border-color: var(--gold); }
+      .target-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 6px;
+        font-size: 10px; font-weight: 700; letter-spacing: .04em;
+        margin-right: 8px;
+      }
+      .target-badge.all { background: rgba(59,130,246,.15); color: var(--blue); }
+      .target-badge.one { background: rgba(212,168,67,.15); color: var(--gold); }
+
       .toast {
         position: fixed; bottom: 24px; left: 50%;
         transform: translateX(-50%);
@@ -141,6 +178,17 @@
       <div class="btn-row">
         <button class="btn btn-green" id="btn-start" disabled>▶ بدء</button>
         <button class="btn btn-red"   id="btn-stop"  disabled>■ إيقاف</button>
+      </div>
+    </div>
+
+    <!-- Connected Clients -->
+    <div class="card">
+      <div class="card-title">📱 الأجهزة المتصلة <span class="target-badge all" id="target-badge">الكل</span></div>
+      <div class="client-list" id="client-list">
+        <div style="color:var(--muted);font-size:13px">جارٍ التحميل…</div>
+      </div>
+      <div style="margin-top:10px">
+        <button class="btn btn-muted btn-sm" style="width:100%" id="btn-target-all">الهدف: كل الأجهزة</button>
       </div>
     </div>
 
@@ -202,7 +250,40 @@
       const btnStop  = document.getElementById('btn-stop');
       const srvBtn   = document.getElementById('srv-status');
       const toast    = document.getElementById('toast');
+      const clientListEl = document.getElementById('client-list');
+      const targetBadge  = document.getElementById('target-badge');
+      const btnTargetAll = document.getElementById('btn-target-all');
       let toastTimer = null;
+
+      // ── Targeting state ──
+      let _targetClientId = null;
+      let _clients = [];
+
+      function _targetSuffix() {
+        return _targetClientId ? `?target=${encodeURIComponent(_targetClientId)}` : '';
+      }
+
+      function _updateTargetBadge() {
+        if (_targetClientId) {
+          const c = _clients.find(x => x.id === _targetClientId);
+          targetBadge.textContent = c ? (c.name || c.id) : _targetClientId;
+          targetBadge.className = 'target-badge one';
+          btnTargetAll.textContent = 'الهدف: كل الأجهزة';
+          btnTargetAll.style.borderColor = '';
+        } else {
+          targetBadge.textContent = 'الكل';
+          targetBadge.className = 'target-badge all';
+          btnTargetAll.textContent = '✔ يستهدف الكل';
+          btnTargetAll.style.borderColor = 'var(--blue)';
+        }
+      }
+
+      btnTargetAll.addEventListener('click', () => {
+        _targetClientId = null;
+        _updateTargetBadge();
+        renderClients();
+        showToast('يستهدف كل الأجهزة', true);
+      });
 
       function showToast(msg, ok) {
         toast.textContent = msg;
@@ -259,12 +340,89 @@
         await fetchStatus();
       }
 
+      // ── Client list ──
+      function timeAgo(ts) {
+        const diff = (Date.now() / 1000) - ts;
+        if (diff < 60) return 'الآن';
+        if (diff < 3600) return Math.floor(diff / 60) + 'د';
+        if (diff < 86400) return Math.floor(diff / 3600) + 'س';
+        return Math.floor(diff / 86400) + 'ي';
+      }
+
+      function renderClients() {
+        if (!_clients.length) {
+          clientListEl.innerHTML = '<div style="color:var(--muted);font-size:13px">لا توجد أجهزة مسجّلة بعد</div>';
+          return;
+        }
+        clientListEl.innerHTML = _clients.map(c => {
+          const isTarget = _targetClientId === c.id;
+          const icon = c.device_type === 'phone' ? '📱' : (c.device_type === 'screen' ? '🖥️' : '❓');
+          const displayName = c.name || c.id;
+          const dims = (c.screen_w && c.screen_h) ? `${c.screen_w}×${c.screen_h}` : '';
+          return `
+            <div class="client-item${isTarget ? ' selected' : ''}" data-id="${c.id}">
+              <div class="client-dot ${c.connected ? 'online' : 'offline'}"></div>
+              <div class="client-info">
+                <div class="client-name">${icon} ${displayName}</div>
+                <div class="client-meta">${c.device_type === 'phone' ? 'هاتف' : (c.device_type === 'screen' ? 'شاشة' : 'غير معروف')} ${dims} · ${c.connected ? 'متصل' : 'آخر ظهور ' + timeAgo(c.last_seen)}</div>
+              </div>
+              <div class="client-actions">
+                <button onclick="selectTarget('${c.id}')" title="استهدف">🎯</button>
+                <button onclick="renameClient('${c.id}','${displayName.replace(/'/g, "\\'")}')" title="إعادة تسمية">✏️</button>
+                <button onclick="deleteClient('${c.id}')" title="حذف">🗑️</button>
+              </div>
+            </div>`;
+        }).join('');
+      }
+
+      async function fetchClients() {
+        try {
+          const r = await fetch('/api/clients');
+          const d = await r.json();
+          if (d.ok) { _clients = d.clients; renderClients(); }
+        } catch {}
+      }
+
+      window.selectTarget = (id) => {
+        _targetClientId = (_targetClientId === id) ? null : id;
+        _updateTargetBadge();
+        renderClients();
+        const c = _clients.find(x => x.id === id);
+        showToast(_targetClientId ? `يستهدف: ${c?.name || id}` : 'يستهدف كل الأجهزة', true);
+      };
+
+      window.renameClient = async (id, current) => {
+        const name = prompt('إعادة تسمية الجهاز:', current);
+        if (name === null) return;
+        try {
+          await fetch(`/api/clients/${id}/rename`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name}),
+          });
+          showToast('✔ تمت إعادة التسمية', true);
+          fetchClients();
+        } catch { showToast('خطأ في إعادة التسمية', false); }
+      };
+
+      window.deleteClient = async (id) => {
+        if (!confirm('هل تريد حذف هذا الجهاز من القائمة؟')) return;
+        try {
+          await fetch(`/api/clients/${id}`, {method: 'DELETE'});
+          if (_targetClientId === id) _targetClientId = null;
+          _updateTargetBadge();
+          showToast('✔ تم الحذف', true);
+          fetchClients();
+        } catch { showToast('خطأ في الحذف', false); }
+      };
+
+      // ── Browser/display actions (with targeting) ──
       window.browserNav = async (page) => {
         showToast(`جارٍ فتح ${page}…`, true);
         try {
-          const r = await fetch(`/api/browser/navigate/${page}`);
+          const r = await fetch(`/api/browser/navigate/${page}${_targetSuffix()}`);
           const d = await r.json();
-          showToast(d.ok ? `✔ تم الفتح` : `خطأ: ${d.reason}`, d.ok);
+          showToast(d.ok ? '✔ تم الفتح' : `خطأ: ${d.reason}`, d.ok);
         } catch { showToast('خطأ في الشبكة', false); }
       };
 
@@ -275,7 +433,7 @@
           'kiosk':      'ملء الشاشة مفعّل'
         };
         try {
-          const r = await fetch(`/api/browser/${action}`);
+          const r = await fetch(`/api/browser/${action}${_targetSuffix()}`);
           const d = await r.json();
           showToast(d.ok ? (labels[action] || '✔ تم') : `خطأ: ${d.reason}`, d.ok);
         } catch { showToast('خطأ في الشبكة', false); }
@@ -296,7 +454,7 @@
         _updateLangBtns();
         const send = _displayLang || 'all';
         try {
-          const r = await fetch(`/api/browser/language/${send}`);
+          const r = await fetch(`/api/browser/language/${send}${_targetSuffix()}`);
           const d = await r.json();
           showToast(d.ok ? `✔ اللغة: ${send.toUpperCase()}` : `خطأ: ${d.reason}`, d.ok);
         } catch { showToast('خطأ في الشبكة', false); }
@@ -329,8 +487,11 @@
 
       fetchStatus();
       fetchServerStatus();
+      fetchClients();
+      _updateTargetBadge();
       setInterval(fetchStatus, 3000);
       setInterval(fetchServerStatus, 15000);
+      setInterval(fetchClients, 5000);
     })();
     </script>
   </body>

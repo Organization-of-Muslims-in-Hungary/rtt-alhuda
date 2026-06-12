@@ -22,6 +22,7 @@ from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log, send_sse_control
 from rtt_alhuda.openrouter_debug import log_startup_summary
+from rtt_alhuda import client_db
 
 
 def get_hours_timestamp() -> str:
@@ -289,6 +290,10 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     Data is pushed directly from ``_process_chunk`` — no polling.
     This handler just registers the response and keeps the connection alive.
     SSE clients are fully independent of any WebSocket connection.
+
+    Query params (optional):
+        client_id  — associates this SSE connection with a registered client
+                     so the control panel can target commands to it.
     """
 
     response = web.StreamResponse(
@@ -305,18 +310,33 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
 
     session = _get_session(request)
     session.text_sse_clients.add(response)
-    log("SSE text stream client connected")
+
+    client_id = request.query.get("client_id")
+    if client_id:
+        session.client_sse_map[client_id] = response
+        db = request.app["client_db"]
+        await client_db.touch_client(db, client_id)
+        log(f"SSE text stream client connected (client_id={client_id})")
+    else:
+        log("SSE text stream client connected (anonymous)")
 
     try:
         while True:
             await asyncio.sleep(5)
             await response.write(b": keepalive\n\n")
+            # Refresh last_seen periodically
+            if client_id:
+                await client_db.touch_client(db, client_id)
     except (asyncio.CancelledError, ConnectionResetError, ConnectionError,
             OSError, RuntimeError):
         pass
     finally:
         session.text_sse_clients.discard(response)
-        log("SSE text stream client disconnected")
+        if client_id:
+            session.client_sse_map.pop(client_id, None)
+            log(f"SSE text stream client disconnected (client_id={client_id})")
+        else:
+            log("SSE text stream client disconnected (anonymous)")
 
     return response
 
@@ -336,17 +356,22 @@ async def index_handler(_: web.Request) -> web.StreamResponse:
 
 
 async def on_startup(app: web.Application) -> None:
-    """Create the shared HTTP client used for OpenRouter requests."""
+    """Create the shared HTTP client and open the client database."""
 
     app["http_client"] = ClientSession()
+    app["client_db"] = await client_db.get_db()
     log_startup_summary()
+    log(f"Client database: {client_db.DB_PATH}")
 
 
 async def on_cleanup(app: web.Application) -> None:
-    """Close the shared HTTP client when the server shuts down."""
+    """Close the shared HTTP client and database when the server shuts down."""
 
     http: ClientSession = app["http_client"]
     await http.close()
+    db = app.get("client_db")
+    if db:
+        await db.close()
 
 
 async def control_page_handler(_: web.Request) -> web.StreamResponse:
@@ -429,6 +454,8 @@ async def browser_handler(request: web.Request) -> web.Response:
     session = _get_session(request)
 
     # ── SSE-based actions (OS-independent) ────────────────────────
+    # Optional ?target=<client_id> to send to a single client instead of all.
+    target = request.query.get("target")
 
     if action.startswith("navigate/"):
         page_key = action.split("/", 1)[1]
@@ -436,18 +463,19 @@ async def browser_handler(request: web.Request) -> web.Response:
             return web.json_response(
                 {"ok": False, "reason": f"unknown page '{page_key}'"}, status=400
             )
-        await send_sse_control(session, "navigate", page=page_key)
-        return web.json_response({"ok": True, "action": f"navigate:{page_key}"})
+        await send_sse_control(session, "navigate", target_client_id=target, page=page_key)
+        return web.json_response({"ok": True, "action": f"navigate:{page_key}", "target": target})
 
     if action == "refresh":
-        await send_sse_control(session, "refresh")
-        return web.json_response({"ok": True, "action": "refresh"})
+        await send_sse_control(session, "refresh", target_client_id=target)
+        return web.json_response({"ok": True, "action": "refresh", "target": target})
 
     if action.startswith("language/"):
         lang = action.split("/", 1)[1]
-        session.media_tts_language = lang
-        await send_sse_control(session, "lang_switch", lang=lang)
-        return web.json_response({"ok": True, "lang": lang})
+        if not target:
+            session.media_tts_language = lang
+        await send_sse_control(session, "lang_switch", target_client_id=target, lang=lang)
+        return web.json_response({"ok": True, "lang": lang, "target": target})
 
     # ── OS-level actions (Pi-specific) ────────────────────────────
 
@@ -542,6 +570,68 @@ async def lan_ipv4_handler(_request: web.Request) -> web.Response:
     return web.json_response({"ipv4": detect_lan_ipv4()})
 
 
+# ── Client registry API ───────────────────────────────────────────────────────
+
+
+async def client_register_handler(request: web.Request) -> web.Response:
+    """POST /api/clients/register  — register or re-identify a client.
+
+    Body JSON: {client_id?: string, name: string, screen_w: int, screen_h: int}
+    Returns the full client record (with id to persist in localStorage).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "reason": "invalid json"}, status=400)
+
+    db = request.app["client_db"]
+    ua = request.headers.get("User-Agent", "")
+    client = await client_db.register_client(
+        db,
+        client_id=body.get("client_id"),
+        name=body.get("name", ""),
+        screen_w=body.get("screen_w", 0),
+        screen_h=body.get("screen_h", 0),
+        user_agent=ua,
+    )
+    return web.json_response({"ok": True, "client": client})
+
+
+async def client_list_handler(request: web.Request) -> web.Response:
+    """GET /api/clients — list all known clients with online status."""
+    db = request.app["client_db"]
+    session = _get_session(request)
+    clients = await client_db.list_clients(db)
+    connected_ids = set(session.client_sse_map.keys())
+    for c in clients:
+        c["connected"] = c["id"] in connected_ids
+    return web.json_response({"ok": True, "clients": clients})
+
+
+async def client_rename_handler(request: web.Request) -> web.Response:
+    """POST /api/clients/{client_id}/rename  — rename a client."""
+    cid = request.match_info["client_id"]
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "reason": "invalid json"}, status=400)
+    db = request.app["client_db"]
+    ok = await client_db.rename_client(db, cid, body.get("name", ""))
+    if not ok:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
+async def client_delete_handler(request: web.Request) -> web.Response:
+    """DELETE /api/clients/{client_id} — remove a client from registry."""
+    cid = request.match_info["client_id"]
+    db = request.app["client_db"]
+    ok = await client_db.delete_client(db, cid)
+    if not ok:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
@@ -562,6 +652,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/control/{action}", control_handler)
     app.router.add_get("/api/browser/{action:.*}", browser_handler)
     app.router.add_get("/api/server/{action}", server_control_handler)
+    # Client registry API
+    app.router.add_post("/api/clients/register", client_register_handler)
+    app.router.add_get("/api/clients", client_list_handler)
+    app.router.add_post("/api/clients/{client_id}/rename", client_rename_handler)
+    app.router.add_delete("/api/clients/{client_id}", client_delete_handler)
 
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
