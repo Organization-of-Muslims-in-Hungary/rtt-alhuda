@@ -23,26 +23,45 @@
         background: var(--bg);
         color: var(--text);
         font-family: "Segoe UI", Inter, sans-serif;
+        padding: 24px 16px 40px;
+      }
+
+      .page-header {
+        display: flex; flex-direction: column; align-items: center; gap: 2px;
+        margin-bottom: 20px;
+      }
+
+      .cards-grid {
         display: flex;
         flex-direction: column;
         align-items: center;
-        padding: 24px 16px 40px;
         gap: 16px;
+        max-width: 1200px;
+        margin: 0 auto;
       }
 
-      .logo {
-        display: flex; flex-direction: column; align-items: center; gap: 2px;
+      @media (min-width: 800px) {
+        .cards-grid {
+          display: grid;
+          grid-template-columns: repeat(2, 1fr);
+          align-items: start;
+        }
       }
-      .logo .crescent { font-size: 32px; }
-      .logo .name { font-size: 20px; font-weight: 600; color: var(--gold); }
-      .logo .sub { font-size: 11px; color: var(--muted); letter-spacing: .07em; text-transform: uppercase; }
+      @media (min-width: 1200px) {
+        .cards-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+      }
 
       .card {
-        width: 100%; max-width: 380px;
+        width: 100%;
         background: var(--surface);
         border: 1px solid var(--border);
         border-radius: 14px;
         padding: 16px;
+      }
+      @media (max-width: 799px) {
+        .card { max-width: 380px; }
       }
       .card-title {
         font-size: 11px; font-weight: 600; color: var(--muted);
@@ -132,6 +151,19 @@
       .target-badge.all { background: rgba(59,130,246,.15); color: var(--blue); }
       .target-badge.one { background: rgba(212,168,67,.15); color: var(--gold); }
 
+      .offline-toggle {
+        display: flex; align-items: center; gap: 6px;
+        padding: 6px 0; margin-top: 4px;
+        font-size: 12px; color: var(--muted); cursor: pointer;
+        user-select: none; border: none; background: none;
+        font-family: inherit;
+      }
+      .offline-toggle:hover { color: var(--text); }
+      .offline-toggle .arrow { transition: transform .2s; display: inline-block; }
+      .offline-toggle .arrow.open { transform: rotate(90deg); }
+      .offline-section { overflow: hidden; }
+      .offline-section.collapsed { display: none; }
+
       .toast {
         position: fixed; bottom: 24px; left: 50%;
         transform: translateX(-50%);
@@ -142,15 +174,17 @@
       }
       .toast.show { opacity: 1; }
 
-      .divider { width: 100%; max-width: 380px; border: none; border-top: 1px solid var(--border); }
+
     </style>
   </head>
   <body>
-    <div class="logo">
-      <span class="crescent">☪</span>
-      <div class="name">Juma Remote</div>
-      <div class="sub">Phone control panel</div>
+    <div class="page-header">
+      <span style="font-size:32px">☪</span>
+      <div style="font-size:20px;font-weight:600;color:var(--gold)">Juma Remote</div>
+      <div style="font-size:11px;color:var(--muted);letter-spacing:.07em;text-transform:uppercase">Control Panel</div>
     </div>
+
+    <div class="cards-grid">
 
     <!-- Recording status + start/stop -->
     <div class="card">
@@ -225,6 +259,8 @@
         <a href="/reports"  class="btn btn-muted btn-sm" style="text-decoration:none;text-align:center;display:block">Reports</a>
       </div>
     </div>
+
+    </div><!-- /cards-grid -->
 
     <div class="toast" id="toast"></div>
 
@@ -336,31 +372,53 @@
         return Math.floor(diff / 86400) + 'd ago';
       }
 
+      let _offlineExpanded = false;
+
+      function _clientHtml(c) {
+        const isTarget = _targetClientId === c.id;
+        const icon = c.device_type === 'phone' ? '📱' : (c.device_type === 'screen' ? '🖥️' : '❓');
+        const displayName = c.name || c.id;
+        const dims = (c.screen_w && c.screen_h) ? `${c.screen_w}×${c.screen_h}` : '';
+        return `
+          <div class="client-item${isTarget ? ' selected' : ''}" data-id="${c.id}">
+            <div class="client-dot ${c.connected ? 'online' : 'offline'}"></div>
+            <div class="client-info">
+              <div class="client-name">${icon} ${displayName}</div>
+              <div class="client-meta">${c.device_type} ${dims} · ${c.connected ? 'online' : 'last ' + timeAgo(c.last_seen)}</div>
+            </div>
+            <div class="client-actions">
+              <button onclick="selectTarget('${c.id}')" title="Target this client">🎯</button>
+              <button onclick="renameClient('${c.id}','${displayName.replace(/'/g, "\\'")}')" title="Rename">✏️</button>
+              <button onclick="deleteClient('${c.id}')" title="Remove">🗑️</button>
+            </div>
+          </div>`;
+      }
+
       function renderClients() {
         if (!_clients.length) {
           clientListEl.innerHTML = '<div style="color:var(--muted);font-size:13px">No clients registered yet</div>';
           return;
         }
-        clientListEl.innerHTML = _clients.map(c => {
-          const isTarget = _targetClientId === c.id;
-          const icon = c.device_type === 'phone' ? '📱' : (c.device_type === 'screen' ? '🖥️' : '❓');
-          const displayName = c.name || c.id;
-          const dims = (c.screen_w && c.screen_h) ? `${c.screen_w}×${c.screen_h}` : '';
-          return `
-            <div class="client-item${isTarget ? ' selected' : ''}" data-id="${c.id}">
-              <div class="client-dot ${c.connected ? 'online' : 'offline'}"></div>
-              <div class="client-info">
-                <div class="client-name">${icon} ${displayName}</div>
-                <div class="client-meta">${c.device_type} ${dims} · ${c.connected ? 'online' : 'last ' + timeAgo(c.last_seen)}</div>
-              </div>
-              <div class="client-actions">
-                <button onclick="selectTarget('${c.id}')" title="Target this client">🎯</button>
-                <button onclick="renameClient('${c.id}','${displayName.replace(/'/g, "\\'")}')" title="Rename">✏️</button>
-                <button onclick="deleteClient('${c.id}')" title="Remove">🗑️</button>
-              </div>
-            </div>`;
-        }).join('');
+        const online  = _clients.filter(c => c.connected);
+        const offline = _clients.filter(c => !c.connected);
+        let html = online.map(_clientHtml).join('');
+        if (offline.length) {
+          const arrow = _offlineExpanded ? 'open' : '';
+          html += `<button class="offline-toggle" onclick="toggleOffline()">
+                     <span class="arrow ${arrow}">&#9654;</span>
+                     Offline (${offline.length})
+                   </button>`;
+          html += `<div class="offline-section${_offlineExpanded ? '' : ' collapsed'}">
+                     ${offline.map(_clientHtml).join('')}
+                   </div>`;
+        }
+        clientListEl.innerHTML = html;
       }
+
+      window.toggleOffline = () => {
+        _offlineExpanded = !_offlineExpanded;
+        renderClients();
+      };
 
       async function fetchClients() {
         try {
