@@ -1,36 +1,86 @@
-"""SQLite-backed client registry for per-client SSE control."""
+"""SQLite database: versioned schema with client registry (and future tables)."""
 
 import time
 import uuid
-from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
 from rtt_alhuda.config import REPO_ROOT
 
-DB_PATH = REPO_ROOT / "clients.db"
+DB_PATH = REPO_ROOT / "alhuda.db"
 
-_CREATE_TABLE = """
-CREATE TABLE IF NOT EXISTS clients (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL DEFAULT '',
-    device_type TEXT NOT NULL DEFAULT 'unknown',
-    screen_w    INTEGER NOT NULL DEFAULT 0,
-    screen_h    INTEGER NOT NULL DEFAULT 0,
-    first_seen  REAL NOT NULL,
-    last_seen   REAL NOT NULL,
-    user_agent  TEXT NOT NULL DEFAULT ''
-);
-"""
+# ── Schema migrations ─────────────────────────────────────────────────────────
+# Each entry is (version, list_of_sql_statements).
+# Migrations run in order; only those newer than the stored version execute.
+
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    (1, [
+        """CREATE TABLE IF NOT EXISTS clients (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL DEFAULT '',
+            device_type TEXT NOT NULL DEFAULT 'unknown',
+            screen_w    INTEGER NOT NULL DEFAULT 0,
+            screen_h    INTEGER NOT NULL DEFAULT 0,
+            first_seen  REAL NOT NULL,
+            last_seen   REAL NOT NULL,
+            user_agent  TEXT NOT NULL DEFAULT ''
+        );""",
+    ]),
+    # Future migrations go here:
+    # (2, ["ALTER TABLE clients ADD COLUMN ...", "CREATE TABLE ..."]),
+]
+
+LATEST_VERSION = MIGRATIONS[-1][0]
+
+
+async def _get_schema_version(db: aiosqlite.Connection) -> int:
+    """Return the current schema version (0 if brand-new database)."""
+    # The meta table may not exist yet on a fresh DB.
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='_meta'"
+    )
+    if not await cursor.fetchone():
+        return 0
+    cursor = await db.execute("SELECT value FROM _meta WHERE key = 'schema_version'")
+    row = await cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def _set_schema_version(db: aiosqlite.Connection, version: int) -> None:
+    await db.execute(
+        "INSERT OR REPLACE INTO _meta (key, value) VALUES ('schema_version', ?)",
+        (str(version),),
+    )
+
+
+async def _migrate(db: aiosqlite.Connection) -> None:
+    """Run any outstanding migrations."""
+    current = await _get_schema_version(db)
+
+    if current >= LATEST_VERSION:
+        return
+
+    # Ensure the _meta table exists before the first migration.
+    await db.execute(
+        "CREATE TABLE IF NOT EXISTS _meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+
+    for version, statements in MIGRATIONS:
+        if version <= current:
+            continue
+        for sql in statements:
+            await db.execute(sql)
+        await _set_schema_version(db, version)
+
+    await db.commit()
 
 
 async def get_db() -> aiosqlite.Connection:
-    """Open (or create) the clients database and ensure the table exists."""
+    """Open (or create) the database and run pending migrations."""
     db = await aiosqlite.connect(str(DB_PATH))
     db.row_factory = aiosqlite.Row
-    await db.execute(_CREATE_TABLE)
-    await db.commit()
+    await _migrate(db)
     return db
 
 

@@ -22,7 +22,7 @@ from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log, send_sse_control
 from rtt_alhuda.openrouter_debug import log_startup_summary
-from rtt_alhuda import client_db
+from rtt_alhuda import db as client_db
 
 
 def get_hours_timestamp() -> str:
