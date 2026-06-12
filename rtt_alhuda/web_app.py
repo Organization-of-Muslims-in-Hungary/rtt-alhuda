@@ -291,9 +291,14 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     This handler just registers the response and keeps the connection alive.
     SSE clients are fully independent of any WebSocket connection.
 
-    Query params (optional):
-        client_id  — associates this SSE connection with a registered client
-                     so the control panel can target commands to it.
+    Auto-registration:
+        Every SSE connection is automatically registered as a client.
+        Pass ``?client_id=<id>`` to re-identify (from localStorage).
+        Pass ``?screen_w=N&screen_h=N`` for device-type detection.
+        Pass ``?name=MyTV`` to give the client a friendly name.
+
+        The server emits an ``event: registered`` SSE message with the
+        client record (including ``id``) so the frontend can persist it.
     """
 
     response = web.StreamResponse(
@@ -311,32 +316,51 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
     session = _get_session(request)
     session.text_sse_clients.add(response)
 
-    client_id = request.query.get("client_id")
-    if client_id:
-        session.client_sse_map[client_id] = response
-        db = request.app["client_db"]
-        await client_db.touch_client(db, client_id)
-        log(f"SSE text stream client connected (client_id={client_id})")
-    else:
-        log("SSE text stream client connected (anonymous)")
+    # ── Auto-register the client ──────────────────────────────────
+    db = request.app["client_db"]
+    req_client_id = request.query.get("client_id") or None
+    name = request.query.get("name", "")
+    try:
+        screen_w = int(request.query.get("screen_w", 0))
+    except ValueError:
+        screen_w = 0
+    try:
+        screen_h = int(request.query.get("screen_h", 0))
+    except ValueError:
+        screen_h = 0
+    ua = request.headers.get("User-Agent", "")
+
+    client = await client_db.register_client(
+        db,
+        client_id=req_client_id,
+        name=name,
+        screen_w=screen_w,
+        screen_h=screen_h,
+        user_agent=ua,
+    )
+    client_id = client["id"]
+    session.client_sse_map[client_id] = response
+    log(f"SSE text stream client connected (client_id={client_id})")
+
+    # Send the client its registration info so it can store the id.
+    reg_msg = f"event: registered\ndata: {json.dumps(client, ensure_ascii=False)}\n\n".encode()
+    try:
+        await response.write(reg_msg)
+    except Exception:
+        pass
 
     try:
         while True:
             await asyncio.sleep(5)
             await response.write(b": keepalive\n\n")
-            # Refresh last_seen periodically
-            if client_id:
-                await client_db.touch_client(db, client_id)
+            await client_db.touch_client(db, client_id)
     except (asyncio.CancelledError, ConnectionResetError, ConnectionError,
             OSError, RuntimeError):
         pass
     finally:
         session.text_sse_clients.discard(response)
-        if client_id:
-            session.client_sse_map.pop(client_id, None)
-            log(f"SSE text stream client disconnected (client_id={client_id})")
-        else:
-            log("SSE text stream client disconnected (anonymous)")
+        session.client_sse_map.pop(client_id, None)
+        log(f"SSE text stream client disconnected (client_id={client_id})")
 
     return response
 
