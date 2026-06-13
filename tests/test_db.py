@@ -240,3 +240,38 @@ async def test_get_client_nonexistent_returns_empty_dict() -> None:
     result = await client_db._get_client(db, "nope")
     assert result == {}
     await db.close()
+
+
+@pytest.mark.asyncio
+async def test_reregister_with_empty_name_preserves_renamed() -> None:
+    """SSE reconnects pass name='', which must not overwrite a prior rename."""
+    db = await _memory_db()
+    client = await client_db.register_client(
+        db, client_id=None, name="", screen_w=1920, screen_h=1080, user_agent=""
+    )
+    cid = client["id"]
+
+    # Operator renames the client via the control panel
+    await client_db.rename_client(db, cid, "Living Room TV")
+
+    # SSE reconnects with name="" — must NOT erase the rename
+    updated = await client_db.register_client(
+        db, client_id=cid, name="", screen_w=1920, screen_h=1080, user_agent=""
+    )
+    assert updated["name"] == "Living Room TV"
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_reregister_with_explicit_name_overwrites() -> None:
+    """When a caller provides a non-empty name, it should update."""
+    db = await _memory_db()
+    client = await client_db.register_client(
+        db, client_id=None, name="Old", screen_w=100, screen_h=100, user_agent=""
+    )
+    cid = client["id"]
+    updated = await client_db.register_client(
+        db, client_id=cid, name="New", screen_w=100, screen_h=100, user_agent=""
+    )
+    assert updated["name"] == "New"
+    await db.close()

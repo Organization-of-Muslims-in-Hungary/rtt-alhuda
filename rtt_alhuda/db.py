@@ -106,13 +106,25 @@ async def register_client(
         cursor = await db.execute("SELECT id FROM clients WHERE id = ?", (client_id,))
         row = await cursor.fetchone()
         if row:
-            await db.execute(
-                """UPDATE clients
-                   SET name = ?, device_type = ?, screen_w = ?, screen_h = ?,
-                       last_seen = ?, user_agent = ?
-                   WHERE id = ?""",
-                (name, device_type, screen_w, screen_h, now, user_agent, client_id),
-            )
+            # Only overwrite name if the caller actually provided one;
+            # an empty string from an SSE reconnect should not erase a
+            # name that was set via /api/clients/{id}/rename.
+            if name:
+                await db.execute(
+                    """UPDATE clients
+                       SET name = ?, device_type = ?, screen_w = ?, screen_h = ?,
+                           last_seen = ?, user_agent = ?
+                       WHERE id = ?""",
+                    (name, device_type, screen_w, screen_h, now, user_agent, client_id),
+                )
+            else:
+                await db.execute(
+                    """UPDATE clients
+                       SET device_type = ?, screen_w = ?, screen_h = ?,
+                           last_seen = ?, user_agent = ?
+                       WHERE id = ?""",
+                    (device_type, screen_w, screen_h, now, user_agent, client_id),
+                )
             await db.commit()
             return await _get_client(db, client_id)
 
