@@ -3,5 +3,6 @@ sounddevice==0.5.5
 python-dotenv==1.1.1
 webrtcvad==2.0.10
 setuptools<81
+aiosqlite>=0.21.0
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

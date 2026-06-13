@@ -1,5 +1,6 @@
 # Environment and secrets
 .env
+alhuda.db
 .env.local
 .env.*.local
 *.pem
