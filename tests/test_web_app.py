@@ -279,7 +279,7 @@ async def test_send_sse_control_targets_single_client() -> None:
     sse_other = AsyncMock()
     session = ServerSession()
     session.text_sse_clients = {sse_target, sse_other}
-    session.client_sse_map = {"client-1": sse_target, "client-2": sse_other}
+    session.client_sse_map = {"client-1": {sse_target}, "client-2": {sse_other}}
 
     await send_sse_control(session, "navigate", target_client_id="client-1", page="tv")
 
@@ -293,7 +293,7 @@ async def test_send_sse_control_target_missing_is_noop() -> None:
     sse = AsyncMock()
     session = ServerSession()
     session.text_sse_clients = {sse}
-    session.client_sse_map = {"client-1": sse}
+    session.client_sse_map = {"client-1": {sse}}
 
     await send_sse_control(session, "refresh", target_client_id="no-such-client")
 
@@ -307,7 +307,7 @@ async def test_send_sse_control_removes_broken_target() -> None:
     sse_broken.write.side_effect = ConnectionResetError
     session = ServerSession()
     session.text_sse_clients = {sse_broken}
-    session.client_sse_map = {"client-1": sse_broken}
+    session.client_sse_map = {"client-1": {sse_broken}}
 
     await send_sse_control(session, "refresh", target_client_id="client-1")
 
@@ -323,7 +323,7 @@ async def test_send_sse_control_broadcast_cleans_broken() -> None:
     sse_broken.write.side_effect = OSError
     session = ServerSession()
     session.text_sse_clients = {sse_ok, sse_broken}
-    session.client_sse_map = {"alive": sse_ok, "dead": sse_broken}
+    session.client_sse_map = {"alive": {sse_ok}, "dead": {sse_broken}}
 
     await send_sse_control(session, "refresh")
 
@@ -331,6 +331,103 @@ async def test_send_sse_control_broadcast_cleans_broken() -> None:
     assert "dead" not in session.client_sse_map
     assert sse_ok in session.text_sse_clients
     assert "alive" in session.client_sse_map
+
+
+# ── Multi-tab (duplicate client_id) SSE tests ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_multiple_tabs_coexist_in_client_sse_map() -> None:
+    """Two SSE connections with the same client_id both stay in the map set."""
+    session = ServerSession()
+    tab_a = AsyncMock()
+    tab_b = AsyncMock()
+    cid = "same-client"
+
+    # Both tabs connect (simulating setdefault().add())
+    session.text_sse_clients.add(tab_a)
+    session.client_sse_map.setdefault(cid, set()).add(tab_a)
+    session.text_sse_clients.add(tab_b)
+    session.client_sse_map.setdefault(cid, set()).add(tab_b)
+
+    assert tab_a in session.client_sse_map[cid]
+    assert tab_b in session.client_sse_map[cid]
+    assert len(session.client_sse_map[cid]) == 2
+
+
+@pytest.mark.asyncio
+async def test_tab_disconnect_leaves_sibling_alive() -> None:
+    """When one tab disconnects, the other tab's entry in the set survives."""
+    session = ServerSession()
+    tab_a = AsyncMock()
+    tab_b = AsyncMock()
+    cid = "same-client"
+
+    session.text_sse_clients.update({tab_a, tab_b})
+    session.client_sse_map[cid] = {tab_a, tab_b}
+
+    # Tab B disconnects — simulate the finally block
+    session.text_sse_clients.discard(tab_b)
+    sse_set = session.client_sse_map.get(cid)
+    sse_set.discard(tab_b)
+    # set is non-empty so the key stays
+    assert cid in session.client_sse_map
+    assert tab_a in session.client_sse_map[cid]
+
+
+@pytest.mark.asyncio
+async def test_last_tab_disconnect_removes_map_key() -> None:
+    """When the last tab for a client_id disconnects, the key is removed."""
+    session = ServerSession()
+    tab = AsyncMock()
+    cid = "lonely"
+
+    session.text_sse_clients.add(tab)
+    session.client_sse_map[cid] = {tab}
+
+    # Disconnect
+    session.text_sse_clients.discard(tab)
+    sse_set = session.client_sse_map.get(cid)
+    sse_set.discard(tab)
+    if not sse_set:
+        del session.client_sse_map[cid]
+
+    assert cid not in session.client_sse_map
+
+
+@pytest.mark.asyncio
+async def test_targeted_control_reaches_all_tabs() -> None:
+    """Targeting a client_id sends the message to every tab in its set."""
+    tab_a = AsyncMock()
+    tab_b = AsyncMock()
+    other = AsyncMock()
+    session = ServerSession()
+    session.text_sse_clients = {tab_a, tab_b, other}
+    session.client_sse_map = {"client-1": {tab_a, tab_b}, "client-2": {other}}
+
+    await send_sse_control(session, "refresh", target_client_id="client-1")
+
+    tab_a.write.assert_called_once()
+    tab_b.write.assert_called_once()
+    other.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_broken_tab_cleaned_without_affecting_sibling() -> None:
+    """A broken tab in a multi-tab set is removed; the healthy sibling stays."""
+    tab_ok = AsyncMock()
+    tab_broken = AsyncMock()
+    tab_broken.write.side_effect = ConnectionResetError
+    session = ServerSession()
+    session.text_sse_clients = {tab_ok, tab_broken}
+    session.client_sse_map = {"client-1": {tab_ok, tab_broken}}
+
+    await send_sse_control(session, "refresh", target_client_id="client-1")
+
+    assert tab_broken not in session.text_sse_clients
+    assert tab_broken not in session.client_sse_map["client-1"]
+    assert tab_ok in session.client_sse_map["client-1"]
+    assert "client-1" in session.client_sse_map
 
 
 # ── Client SSE map on ServerSession ──────────────────────────────────────────
@@ -423,7 +520,7 @@ async def test_client_list_connected_field() -> None:
         )
         cid = (await r.json())["client"]["id"]
         # Simulate SSE connection by putting a mock in client_sse_map
-        app["session"].client_sse_map[cid] = AsyncMock()
+        app["session"].client_sse_map[cid] = {AsyncMock()}
 
         resp = await client.get("/api/clients")
         data = await resp.json()

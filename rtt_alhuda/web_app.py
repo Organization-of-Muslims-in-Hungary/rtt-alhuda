@@ -339,7 +339,7 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
         user_agent=ua,
     )
     client_id = client["id"]
-    session.client_sse_map[client_id] = response
+    session.client_sse_map.setdefault(client_id, set()).add(response)
     log(f"SSE text stream client connected (client_id={client_id})")
 
     # Send the client its registration info so it can store the id.
@@ -359,7 +359,11 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
         pass
     finally:
         session.text_sse_clients.discard(response)
-        session.client_sse_map.pop(client_id, None)
+        sse_set = session.client_sse_map.get(client_id)
+        if sse_set is not None:
+            sse_set.discard(response)
+            if not sse_set:
+                del session.client_sse_map[client_id]
         log(f"SSE text stream client disconnected (client_id={client_id})")
 
     return response

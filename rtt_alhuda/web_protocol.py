@@ -63,25 +63,30 @@ async def send_sse_control(
     sse_msg = f"event: control\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode()
 
     if target_client_id:
-        sse_resp = session.client_sse_map.get(target_client_id)
-        if sse_resp:
-            try:
-                await sse_resp.write(sse_msg)
-            except Exception:
-                session.client_sse_map.pop(target_client_id, None)
-                session.text_sse_clients.discard(sse_resp)
+        sse_set = session.client_sse_map.get(target_client_id)
+        if sse_set:
+            stale: list = []
+            for sse_resp in list(sse_set):
+                try:
+                    await sse_resp.write(sse_msg)
+                except Exception:
+                    stale.append(sse_resp)
+            for resp in stale:
+                sse_set.discard(resp)
+                session.text_sse_clients.discard(resp)
+            if not sse_set:
+                del session.client_sse_map[target_client_id]
         return
 
-    stale: list = []
+    stale_resp: list = []
     for sse_resp in list(session.text_sse_clients):
         try:
             await sse_resp.write(sse_msg)
         except Exception:
-            stale.append(sse_resp)
-    for resp in stale:
+            stale_resp.append(sse_resp)
+    for resp in stale_resp:
         session.text_sse_clients.discard(resp)
-        # Also clean up client_sse_map
-        for cid, r in list(session.client_sse_map.items()):
-            if r is resp:
+        for cid, s in list(session.client_sse_map.items()):
+            s.discard(resp)
+            if not s:
                 del session.client_sse_map[cid]
-                break
