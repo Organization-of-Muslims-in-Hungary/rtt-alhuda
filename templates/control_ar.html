@@ -47,7 +47,7 @@
         .cards-grid {
           display: grid;
           grid-template-columns: repeat(2, 1fr);
-          align-items: start;
+          align-items: stretch;
         }
       }
       @media (min-width: 1200px) {
@@ -55,6 +55,8 @@
           grid-template-columns: repeat(3, 1fr);
         }
       }
+
+      .card.hidden { display: none; }
 
       /* Language toggle top-right */
       .lang-toggle {
@@ -226,9 +228,9 @@
       </div>
     </div>
 
-    <!-- Browser / Display -->
-    <div class="card">
-      <div class="card-title">📺 شاشة العرض</div>
+    <!-- Client Navigation -->
+    <div class="card hidden" id="card-nav">
+      <div class="card-title">📺 عرض العميل</div>
       <div class="grid2" style="margin-bottom:10px">
         <button class="btn btn-gold btn-sm" onclick="browserNav('app')">التطبيق الرئيسي</button>
         <button class="btn btn-blue btn-sm" onclick="browserNav('tv')">عرض التلفاز</button>
@@ -243,7 +245,7 @@
     </div>
 
     <!-- Language switcher -->
-    <div class="card">
+    <div class="card hidden" id="card-lang">
       <div class="card-title">🌐 لغة الشاشة</div>
       <div class="btn-row">
         <button class="btn btn-muted btn-sm" id="lang-btn-all" onclick="switchDisplayLang(null)">الكل</button>
@@ -294,9 +296,18 @@
       // ── Targeting state ──
       let _targetClientId = null;
       let _clients = [];
+      const cardNav  = document.getElementById('card-nav');
+      const cardLang = document.getElementById('card-lang');
 
       function _targetSuffix() {
         return _targetClientId ? `?target=${encodeURIComponent(_targetClientId)}` : '';
+      }
+
+      function _updateCommandCards() {
+        const hasOnline = _clients.some(c => c.connected);
+        const show = _targetClientId || hasOnline;
+        cardNav.classList.toggle('hidden', !show);
+        cardLang.classList.toggle('hidden', !show);
       }
 
       function _updateTargetBadge() {
@@ -312,6 +323,7 @@
           btnTargetAll.textContent = '✔ يستهدف الكل';
           btnTargetAll.style.borderColor = 'var(--blue)';
         }
+        _updateCommandCards();
       }
 
       btnTargetAll.addEventListener('click', () => {
@@ -438,7 +450,7 @@
         try {
           const r = await fetch('/api/clients');
           const d = await r.json();
-          if (d.ok) { _clients = d.clients; renderClients(); }
+          if (d.ok) { _clients = d.clients; renderClients(); _updateCommandCards(); }
         } catch {}
       }
 
