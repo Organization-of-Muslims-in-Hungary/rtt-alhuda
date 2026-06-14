@@ -84,6 +84,34 @@ async def test_migrate_skips_already_applied() -> None:
 
 
 @pytest.mark.asyncio
+async def test_migrate_creates_users_table() -> None:
+    db = await _memory_db()
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    )
+    assert await cursor.fetchone() is not None
+    await db.close()
+
+
+@pytest.mark.asyncio
+async def test_seed_default_admin_only_once() -> None:
+    db = await _memory_db()
+    from rtt_alhuda.auth import hash_password
+    from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
+
+    first = await client_db.seed_default_admin(
+        db, DEFAULT_ADMIN_USERNAME, hash_password(DEFAULT_ADMIN_PASSWORD)
+    )
+    second = await client_db.seed_default_admin(
+        db, DEFAULT_ADMIN_USERNAME, hash_password(DEFAULT_ADMIN_PASSWORD)
+    )
+    assert first is not None
+    assert second is None
+    assert await client_db.count_users(db) == 1
+    await db.close()
+
+
+@pytest.mark.asyncio
 async def test_register_new_client_generates_id() -> None:
     db = await _memory_db()
     client = await client_db.register_client(

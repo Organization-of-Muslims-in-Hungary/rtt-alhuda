@@ -27,8 +27,18 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             user_agent  TEXT NOT NULL DEFAULT ''
         );""",
     ]),
-    # Future migrations go here:
-    # (2, ["ALTER TABLE clients ADD COLUMN ...", "CREATE TABLE ..."]),
+    (2, [
+        """CREATE TABLE IF NOT EXISTS users (
+            id            TEXT PRIMARY KEY,
+            username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'operator',
+            status        TEXT NOT NULL DEFAULT 'pending',
+            created_at    REAL NOT NULL,
+            approved_at   REAL,
+            approved_by   TEXT
+        );""",
+    ]),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]
@@ -161,3 +171,98 @@ async def _get_client(db: aiosqlite.Connection, client_id: str) -> dict:
     cursor = await db.execute("SELECT * FROM clients WHERE id = ?", (client_id,))
     row = await cursor.fetchone()
     return dict(row) if row else {}
+
+
+# ── Operator user accounts ────────────────────────────────────────────────────
+
+
+async def count_users(db: aiosqlite.Connection) -> int:
+    cursor = await db.execute("SELECT COUNT(*) FROM users")
+    row = await cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def create_user(
+    db: aiosqlite.Connection,
+    username: str,
+    password_hash: str,
+    *,
+    role: str = "operator",
+    status: str = "pending",
+    approved_at: Optional[float] = None,
+    approved_by: Optional[str] = None,
+) -> dict:
+    """Insert a new operator account and return the full row."""
+    user_id = uuid.uuid4().hex
+    now = time.time()
+    await db.execute(
+        """INSERT INTO users
+           (id, username, password_hash, role, status, created_at, approved_at, approved_by)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (user_id, username, password_hash, role, status, now, approved_at, approved_by),
+    )
+    await db.commit()
+    return await get_user_by_id(db, user_id)
+
+
+async def get_user_by_id(db: aiosqlite.Connection, user_id: str) -> dict:
+    cursor = await db.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = await cursor.fetchone()
+    return dict(row) if row else {}
+
+
+async def get_user_by_username(db: aiosqlite.Connection, username: str) -> dict:
+    cursor = await db.execute(
+        "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else {}
+
+
+async def list_users(db: aiosqlite.Connection) -> list[dict]:
+    cursor = await db.execute("SELECT * FROM users ORDER BY created_at DESC")
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def set_user_status(
+    db: aiosqlite.Connection,
+    user_id: str,
+    status: str,
+    *,
+    approved_by: Optional[str] = None,
+) -> bool:
+    """Update approval status. Returns False if the user does not exist."""
+    approved_at = time.time() if status == "approved" else None
+    cursor = await db.execute(
+        """UPDATE users
+           SET status = ?, approved_at = ?, approved_by = ?
+           WHERE id = ?""",
+        (status, approved_at, approved_by, user_id),
+    )
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def delete_user(db: aiosqlite.Connection, user_id: str) -> bool:
+    cursor = await db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    await db.commit()
+    return cursor.rowcount > 0
+
+
+async def seed_default_admin(
+    db: aiosqlite.Connection,
+    username: str,
+    password_hash: str,
+) -> Optional[dict]:
+    """Create the default admin account when the users table is empty."""
+    if await count_users(db) > 0:
+        return None
+    return await create_user(
+        db,
+        username,
+        password_hash,
+        role="admin",
+        status="approved",
+        approved_at=time.time(),
+    )

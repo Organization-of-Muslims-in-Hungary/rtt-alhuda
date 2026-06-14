@@ -33,6 +33,14 @@ OPENROUTER_TTS_VOICE_EN = os.getenv("OPENROUTER_TTS_VOICE_EN", "alloy")
 OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "alloy")
 OPENROUTER_TTS_RESPONSE_FORMAT = os.getenv("OPENROUTER_TTS_RESPONSE_FORMAT", "mp3")
 
+# Operator authentication (control page / admin APIs).
+JWT_SECRET = os.getenv("KHUTBA_JWT_SECRET", "dev-insecure-change-me-use-32-chars-min")
+JWT_COOKIE_NAME = "khutba_token"
+JWT_EXPIRY_SECONDS = 7 * 24 * 3600
+MIN_PASSWORD_LENGTH = 8
+DEFAULT_ADMIN_USERNAME = os.getenv("KHUTBA_ADMIN_USERNAME", "admin")
+DEFAULT_ADMIN_PASSWORD = os.getenv("KHUTBA_ADMIN_PASSWORD", "changeme")
+
 
 def voice_for_tts_language(language: str) -> str:
     """Map UI language code to OpenRouter TTS `voice` (API has no separate language field)."""

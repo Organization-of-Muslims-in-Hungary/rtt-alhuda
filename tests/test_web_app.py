@@ -7,6 +7,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 from rtt_alhuda import db as client_db
+from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_app import create_app, start_recording, stop_recording
 from rtt_alhuda.web_protocol import send_log, send_sse_control, send_transcription
@@ -16,6 +17,16 @@ from rtt_alhuda.web_protocol import send_log, send_sse_control, send_transcripti
 def _isolate_db(tmp_path, monkeypatch):
     """Point DB_PATH to a fresh temp file so each test gets its own database."""
     monkeypatch.setattr(client_db, "DB_PATH", tmp_path / "test.db")
+
+
+async def _admin_headers(client: TestClient) -> dict[str, str]:
+    """Log in as the seeded default admin and return Authorization headers."""
+    resp = await client.post(
+        "/api/auth/login",
+        json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+    )
+    token = (await resp.json())["token"]
+    return {"Authorization": f"Bearer {token}"}
 
 
 # ── Route registration tests ────────────────────────────────────────────────
@@ -192,7 +203,8 @@ async def test_control_status_without_ws() -> None:
     """GET /api/control/status works even when no debug WS is connected."""
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/control/status")
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/control/status", headers=headers)
         assert resp.status == 200
         data = await resp.json()
         assert "recording" in data
@@ -204,7 +216,8 @@ async def test_control_stop_when_not_recording() -> None:
     """Stopping when not recording returns a clear error, no crash."""
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/control/stop")
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/control/stop", headers=headers)
         assert resp.status == 200
         data = await resp.json()
         assert data["ok"] is False
@@ -484,7 +497,8 @@ async def test_client_register_reidentifies() -> None:
 async def test_client_list_empty() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/clients")
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/clients", headers=headers)
         data = await resp.json()
         assert data["ok"] is True
         assert data["clients"] == []
@@ -494,6 +508,7 @@ async def test_client_list_empty() -> None:
 async def test_client_list_shows_registered() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
         await client.post(
             "/api/clients/register",
             json={"name": "A", "screen_w": 100, "screen_h": 100},
@@ -502,7 +517,7 @@ async def test_client_list_shows_registered() -> None:
             "/api/clients/register",
             json={"name": "B", "screen_w": 1920, "screen_h": 1080},
         )
-        resp = await client.get("/api/clients")
+        resp = await client.get("/api/clients", headers=headers)
         data = await resp.json()
         assert len(data["clients"]) == 2
         names = {c["name"] for c in data["clients"]}
@@ -514,6 +529,7 @@ async def test_client_list_connected_field() -> None:
     """Clients in client_sse_map show connected=True, others False."""
     app = create_app()
     async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
         r = await client.post(
             "/api/clients/register",
             json={"name": "Online", "screen_w": 100, "screen_h": 100},
@@ -522,7 +538,7 @@ async def test_client_list_connected_field() -> None:
         # Simulate SSE connection by putting a mock in client_sse_map
         app["session"].client_sse_map[cid] = {AsyncMock()}
 
-        resp = await client.get("/api/clients")
+        resp = await client.get("/api/clients", headers=headers)
         data = await resp.json()
         c = next(c for c in data["clients"] if c["id"] == cid)
         assert c["connected"] is True
@@ -532,6 +548,7 @@ async def test_client_list_connected_field() -> None:
 async def test_client_rename() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
         r = await client.post(
             "/api/clients/register",
             json={"name": "Old", "screen_w": 100, "screen_h": 100},
@@ -539,12 +556,12 @@ async def test_client_rename() -> None:
         cid = (await r.json())["client"]["id"]
 
         resp = await client.post(
-            f"/api/clients/{cid}/rename", json={"name": "New"}
+            f"/api/clients/{cid}/rename", json={"name": "New"}, headers=headers
         )
         assert resp.status == 200
         assert (await resp.json())["ok"] is True
 
-        listing = await (await client.get("/api/clients")).json()
+        listing = await (await client.get("/api/clients", headers=headers)).json()
         assert listing["clients"][0]["name"] == "New"
 
 
@@ -552,8 +569,9 @@ async def test_client_rename() -> None:
 async def test_client_rename_nonexistent() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
         resp = await client.post(
-            "/api/clients/no-such/rename", json={"name": "X"}
+            "/api/clients/no-such/rename", json={"name": "X"}, headers=headers
         )
         assert resp.status == 404
 
@@ -562,17 +580,18 @@ async def test_client_rename_nonexistent() -> None:
 async def test_client_delete() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
         r = await client.post(
             "/api/clients/register",
             json={"name": "Gone", "screen_w": 100, "screen_h": 100},
         )
         cid = (await r.json())["client"]["id"]
 
-        resp = await client.delete(f"/api/clients/{cid}")
+        resp = await client.delete(f"/api/clients/{cid}", headers=headers)
         assert resp.status == 200
         assert (await resp.json())["ok"] is True
 
-        listing = await (await client.get("/api/clients")).json()
+        listing = await (await client.get("/api/clients", headers=headers)).json()
         assert len(listing["clients"]) == 0
 
 
@@ -580,7 +599,8 @@ async def test_client_delete() -> None:
 async def test_client_delete_nonexistent() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.delete("/api/clients/no-such")
+        headers = await _admin_headers(client)
+        resp = await client.delete("/api/clients/no-such", headers=headers)
         assert resp.status == 404
 
 
@@ -592,7 +612,10 @@ async def test_browser_navigate_with_target_param() -> None:
     """GET /api/browser/navigate/tv?target=X returns ok with the target echoed."""
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/browser/navigate/tv?target=client-42")
+        headers = await _admin_headers(client)
+        resp = await client.get(
+            "/api/browser/navigate/tv?target=client-42", headers=headers
+        )
         data = await resp.json()
         assert data["ok"] is True
         assert data["target"] == "client-42"
@@ -603,7 +626,8 @@ async def test_browser_navigate_without_target() -> None:
     """Without ?target, the response has target=null (broadcast)."""
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/browser/navigate/app")
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/browser/navigate/app", headers=headers)
         data = await resp.json()
         assert data["ok"] is True
         assert data["target"] is None
@@ -613,7 +637,8 @@ async def test_browser_navigate_without_target() -> None:
 async def test_browser_refresh_with_target() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/browser/refresh?target=abc")
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/browser/refresh?target=abc", headers=headers)
         data = await resp.json()
         assert data["ok"] is True
         assert data["target"] == "abc"
@@ -623,7 +648,10 @@ async def test_browser_refresh_with_target() -> None:
 async def test_browser_language_with_target() -> None:
     app = create_app()
     async with TestClient(TestServer(app)) as client:
-        resp = await client.get("/api/browser/language/en?target=client-7")
+        headers = await _admin_headers(client)
+        resp = await client.get(
+            "/api/browser/language/en?target=client-7", headers=headers
+        )
         data = await resp.json()
         assert data["ok"] is True
         assert data["target"] == "client-7"
