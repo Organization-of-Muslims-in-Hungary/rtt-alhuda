@@ -1,0 +1,16 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.test-venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+alhuda.db
+*.db
+tests
+docs
+scripts
+README.md
