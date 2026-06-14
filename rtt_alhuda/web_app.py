@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from aiohttp import ClientSession, WSMsgType, web
+import aiosqlite
 
 from rtt_alhuda.audio_capture import capture_microphone_loop
 from rtt_alhuda.audio_processor import process_audio_loop
@@ -23,6 +24,20 @@ from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log, send_sse_control
 from rtt_alhuda.openrouter_debug import log_startup_summary
 from rtt_alhuda import db as client_db
+from rtt_alhuda.auth import (
+    auth_middleware,
+    clear_auth_cookie,
+    create_access_token,
+    hash_password,
+    public_user,
+    resolve_user,
+    set_auth_cookie,
+    validate_password,
+    validate_username,
+    verify_password,
+)
+from rtt_alhuda import config
+from rtt_alhuda.config import validate_auth_config
 
 
 def get_hours_timestamp() -> str:
@@ -386,8 +401,16 @@ async def index_handler(_: web.Request) -> web.StreamResponse:
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client and open the client database."""
 
+    validate_auth_config()
     app["http_client"] = ClientSession()
     app["client_db"] = await client_db.get_db()
+    seeded = await client_db.seed_default_admin(
+        app["client_db"],
+        config.DEFAULT_ADMIN_USERNAME,
+        hash_password(config.DEFAULT_ADMIN_PASSWORD),
+    )
+    if seeded:
+        log(f"Seeded default admin user '{config.DEFAULT_ADMIN_USERNAME}'")
     log_startup_summary()
     log(f"Client database: {client_db.DB_PATH}")
 
@@ -660,10 +683,160 @@ async def client_delete_handler(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+# ── Operator authentication ─────────────────────────────────────────────────────
+
+
+async def auth_register_handler(request: web.Request) -> web.Response:
+    """POST /api/auth/register — open operator sign-up (pending admin approval)."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "reason": "invalid json"}, status=400)
+
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    if err := validate_username(username):
+        return web.json_response({"ok": False, "reason": err}, status=400)
+    if err := validate_password(password):
+        return web.json_response({"ok": False, "reason": err}, status=400)
+
+    db = request.app["client_db"]
+    if await client_db.get_user_by_username(db, username):
+        return web.json_response({"ok": False, "reason": "username_taken"}, status=409)
+
+    try:
+        user = await client_db.create_user(
+            db,
+            username,
+            hash_password(password),
+            role="operator",
+            status="pending",
+        )
+    except aiosqlite.IntegrityError:
+        return web.json_response({"ok": False, "reason": "username_taken"}, status=409)
+
+    return web.json_response(
+        {"ok": True, "user": public_user(user)},
+        status=201,
+    )
+
+
+async def auth_login_handler(request: web.Request) -> web.Response:
+    """POST /api/auth/login — approved operators and admins receive JWT + cookie."""
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "reason": "invalid json"}, status=400)
+
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+
+    db = request.app["client_db"]
+    user = await client_db.get_user_by_username(db, username)
+    if not user or not verify_password(password, user["password_hash"]):
+        return web.json_response({"ok": False, "reason": "invalid_credentials"}, status=401)
+
+    if user["status"] == "pending":
+        return web.json_response({"ok": False, "reason": "pending_approval"}, status=403)
+    if user["status"] == "rejected":
+        return web.json_response({"ok": False, "reason": "rejected"}, status=403)
+
+    token = create_access_token(user)
+    response = web.json_response({"ok": True, "token": token, "user": public_user(user)})
+    set_auth_cookie(response, token)
+    return response
+
+
+async def auth_logout_handler(request: web.Request) -> web.Response:
+    """POST /api/auth/logout — clear session cookie."""
+    response = web.json_response({"ok": True})
+    clear_auth_cookie(response)
+    return response
+
+
+async def auth_me_handler(request: web.Request) -> web.Response:
+    """GET /api/auth/me — return the current authenticated user."""
+    user = await resolve_user(request)
+    if not user:
+        return web.json_response({"ok": False, "reason": "unauthorized"}, status=401)
+    return web.json_response({"ok": True, "user": public_user(user)})
+
+
+# ── Admin user management ─────────────────────────────────────────────────────
+
+
+async def admin_list_users_handler(request: web.Request) -> web.Response:
+    """GET /api/admin/users — list operator accounts (admin only)."""
+    db = request.app["client_db"]
+    users = [public_user(u) for u in await client_db.list_users(db)]
+    return web.json_response({"ok": True, "users": users})
+
+
+async def admin_approve_user_handler(request: web.Request) -> web.Response:
+    """POST /api/admin/users/{user_id}/approve — approve a pending operator."""
+    user_id = request.match_info["user_id"]
+    db = request.app["client_db"]
+    target = await client_db.get_user_by_id(db, user_id)
+    if not target:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    if target["role"] == "admin":
+        return web.json_response({"ok": False, "reason": "cannot_modify_admin"}, status=400)
+    if target["status"] != "pending":
+        return web.json_response({"ok": False, "reason": "not_pending"}, status=400)
+
+    admin = request["user"]
+    ok = await client_db.set_user_status(
+        db, user_id, "approved", approved_by=admin["id"]
+    )
+    if not ok:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    updated = await client_db.get_user_by_id(db, user_id)
+    return web.json_response({"ok": True, "user": public_user(updated)})
+
+
+async def admin_reject_user_handler(request: web.Request) -> web.Response:
+    """POST /api/admin/users/{user_id}/reject — reject a pending operator."""
+    user_id = request.match_info["user_id"]
+    db = request.app["client_db"]
+    target = await client_db.get_user_by_id(db, user_id)
+    if not target:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    if target["role"] == "admin":
+        return web.json_response({"ok": False, "reason": "cannot_modify_admin"}, status=400)
+    if target["status"] != "pending":
+        return web.json_response({"ok": False, "reason": "not_pending"}, status=400)
+
+    admin = request["user"]
+    ok = await client_db.set_user_status(
+        db, user_id, "rejected", approved_by=admin["id"]
+    )
+    if not ok:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    updated = await client_db.get_user_by_id(db, user_id)
+    return web.json_response({"ok": True, "user": public_user(updated)})
+
+
+async def admin_delete_user_handler(request: web.Request) -> web.Response:
+    """DELETE /api/admin/users/{user_id} — remove an operator account."""
+    user_id = request.match_info["user_id"]
+    db = request.app["client_db"]
+    target = await client_db.get_user_by_id(db, user_id)
+    if not target:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    if target["role"] == "admin":
+        return web.json_response({"ok": False, "reason": "cannot_delete_admin"}, status=400)
+
+    ok = await client_db.delete_user(db, user_id)
+    if not ok:
+        return web.json_response({"ok": False, "reason": "not found"}, status=404)
+    return web.json_response({"ok": True})
+
+
 def create_app() -> web.Application:
     """Build and wire the aiohttp application and its routes."""
 
-    app = web.Application()
+    app = web.Application(middlewares=[auth_middleware])
     session = ServerSession()
     app["session"] = session
     app.router.add_get("/", index_handler)
@@ -685,6 +858,16 @@ def create_app() -> web.Application:
     app.router.add_get("/api/clients", client_list_handler)
     app.router.add_post("/api/clients/{client_id}/rename", client_rename_handler)
     app.router.add_delete("/api/clients/{client_id}", client_delete_handler)
+    # Operator authentication
+    app.router.add_post("/api/auth/register", auth_register_handler)
+    app.router.add_post("/api/auth/login", auth_login_handler)
+    app.router.add_post("/api/auth/logout", auth_logout_handler)
+    app.router.add_get("/api/auth/me", auth_me_handler)
+    # Admin user management
+    app.router.add_get("/api/admin/users", admin_list_users_handler)
+    app.router.add_post("/api/admin/users/{user_id}/approve", admin_approve_user_handler)
+    app.router.add_post("/api/admin/users/{user_id}/reject", admin_reject_user_handler)
+    app.router.add_delete("/api/admin/users/{user_id}", admin_delete_user_handler)
 
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
