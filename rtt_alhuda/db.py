@@ -1,14 +1,16 @@
 """SQLite database: versioned schema with client registry (and future tables)."""
 
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
 from rtt_alhuda.config import REPO_ROOT
 
-DB_PATH = REPO_ROOT / "alhuda.db"
+DB_PATH = Path(os.getenv("KHUTBA_DB_PATH", str(REPO_ROOT / "alhuda.db")))
 
 # ── Schema migrations ─────────────────────────────────────────────────────────
 # Each entry is (version, list_of_sql_statements).

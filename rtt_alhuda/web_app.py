@@ -621,6 +621,12 @@ async def lan_ipv4_handler(_request: web.Request) -> web.Response:
     return web.json_response({"ipv4": detect_lan_ipv4()})
 
 
+async def health_handler(_request: web.Request) -> web.Response:
+    """GET /api/health — liveness probe for compose/systemd."""
+
+    return web.json_response({"ok": True, "status": "healthy"})
+
+
 # ── Client registry API ───────────────────────────────────────────────────────
 
 
@@ -842,6 +848,7 @@ def create_app() -> web.Application:
     app.router.add_get("/", index_handler)
     app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
+    app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/network-status", network_status_handler)
     app.router.add_get("/stream", debug_ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)

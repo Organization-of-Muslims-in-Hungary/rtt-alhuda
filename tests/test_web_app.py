@@ -43,6 +43,7 @@ def test_create_app_registers_stream_route() -> None:
     assert "/stream/text" in get_paths
     assert "/stream/tts/{lang}" in get_paths
     assert "/api/lan-ipv4" in get_paths
+    assert "/api/health" in get_paths
 
 
 def test_create_app_has_no_webrtc_routes() -> None:
@@ -222,6 +223,17 @@ async def test_control_stop_when_not_recording() -> None:
         data = await resp.json()
         assert data["ok"] is False
         assert data["reason"] == "not_recording"
+
+
+@pytest.mark.asyncio
+async def test_health_endpoint() -> None:
+    """GET /api/health is public and returns healthy status."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.get("/api/health")
+        assert resp.status == 200
+        data = await resp.json()
+        assert data == {"ok": True, "status": "healthy"}
 
 
 @pytest.mark.asyncio
