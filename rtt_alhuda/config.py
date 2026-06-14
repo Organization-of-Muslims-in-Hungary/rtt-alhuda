@@ -34,12 +34,36 @@ OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "alloy")
 OPENROUTER_TTS_RESPONSE_FORMAT = os.getenv("OPENROUTER_TTS_RESPONSE_FORMAT", "mp3")
 
 # Operator authentication (control page / admin APIs).
-JWT_SECRET = os.getenv("KHUTBA_JWT_SECRET", "dev-insecure-change-me-use-32-chars-min")
 JWT_COOKIE_NAME = "khutba_token"
 JWT_EXPIRY_SECONDS = 7 * 24 * 3600
 MIN_PASSWORD_LENGTH = 8
-DEFAULT_ADMIN_USERNAME = os.getenv("KHUTBA_ADMIN_USERNAME", "admin")
-DEFAULT_ADMIN_PASSWORD = os.getenv("KHUTBA_ADMIN_PASSWORD", "changeme")
+JWT_SECRET: str | None = None
+DEFAULT_ADMIN_USERNAME: str | None = None
+DEFAULT_ADMIN_PASSWORD: str | None = None
+JWT_COOKIE_SECURE = os.getenv("KHUTBA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
+
+
+def validate_auth_config() -> None:
+    """Load required auth settings from the environment or fail closed."""
+    global JWT_SECRET, DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
+
+    JWT_SECRET = os.getenv("KHUTBA_JWT_SECRET")
+    DEFAULT_ADMIN_USERNAME = os.getenv("KHUTBA_ADMIN_USERNAME")
+    DEFAULT_ADMIN_PASSWORD = os.getenv("KHUTBA_ADMIN_PASSWORD")
+
+    missing = [
+        name
+        for name, value in (
+            ("KHUTBA_JWT_SECRET", JWT_SECRET),
+            ("KHUTBA_ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME),
+            ("KHUTBA_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD),
+        )
+        if not value
+    ]
+    if missing:
+        raise RuntimeError(
+            "Missing required auth environment variables: " + ", ".join(missing)
+        )
 
 
 def voice_for_tts_language(language: str) -> str:

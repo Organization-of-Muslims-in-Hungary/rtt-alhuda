@@ -3,8 +3,7 @@
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from rtt_alhuda import db as client_db
-from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
+from rtt_alhuda import config, db as client_db
 from rtt_alhuda.web_app import create_app
 
 
@@ -23,7 +22,7 @@ async def _start_app():
 async def _admin_token(client) -> str:
     resp = await client.post(
         "/api/auth/login",
-        json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+        json={"username": config.DEFAULT_ADMIN_USERNAME, "password": config.DEFAULT_ADMIN_PASSWORD},
     )
     assert resp.status == 200
     return (await resp.json())["token"]
@@ -38,7 +37,7 @@ async def test_startup_seeds_default_admin() -> None:
     app, client = await _start_app()
     try:
         db = app["client_db"]
-        admin = await client_db.get_user_by_username(db, DEFAULT_ADMIN_USERNAME)
+        admin = await client_db.get_user_by_username(db, config.DEFAULT_ADMIN_USERNAME)
         assert admin
         assert admin["role"] == "admin"
         assert admin["status"] == "approved"
@@ -114,7 +113,7 @@ async def test_admin_login_returns_token_and_cookie() -> None:
     try:
         resp = await client.post(
             "/api/auth/login",
-            json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+            json={"username": config.DEFAULT_ADMIN_USERNAME, "password": config.DEFAULT_ADMIN_PASSWORD},
         )
         assert resp.status == 200
         data = await resp.json()
@@ -134,7 +133,7 @@ async def test_auth_me_with_bearer_token() -> None:
         resp = await client.get("/api/auth/me", headers=_auth_headers(token))
         assert resp.status == 200
         data = await resp.json()
-        assert data["user"]["username"] == DEFAULT_ADMIN_USERNAME
+        assert data["user"]["username"] == config.DEFAULT_ADMIN_USERNAME
     finally:
         await client.close()
 
@@ -240,7 +239,7 @@ async def test_admin_cannot_delete_admin_user() -> None:
     try:
         token = await _admin_token(client)
         db = app["client_db"]
-        admin = await client_db.get_user_by_username(db, DEFAULT_ADMIN_USERNAME)
+        admin = await client_db.get_user_by_username(db, config.DEFAULT_ADMIN_USERNAME)
 
         resp = await client.delete(
             f"/api/admin/users/{admin['id']}",

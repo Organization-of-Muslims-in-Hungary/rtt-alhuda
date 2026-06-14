@@ -5,6 +5,6 @@ webrtcvad==2.0.10
 setuptools<81
 aiosqlite>=0.21.0
 bcrypt>=4.0.0
-PyJWT>=2.8.0
+PyJWT>=2.13.0
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

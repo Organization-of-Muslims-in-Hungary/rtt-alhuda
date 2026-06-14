@@ -10,10 +10,10 @@ import bcrypt
 import jwt
 from aiohttp import web
 
+from rtt_alhuda import config
 from rtt_alhuda.config import (
     JWT_COOKIE_NAME,
     JWT_EXPIRY_SECONDS,
-    JWT_SECRET,
     MIN_PASSWORD_LENGTH,
 )
 
@@ -58,13 +58,20 @@ def create_access_token(user: dict[str, Any]) -> str:
         "iat": now,
         "exp": now + JWT_EXPIRY_SECONDS,
     }
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, config.JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> Optional[dict[str, Any]]:
     """Decode a JWT; return claims dict or None if invalid/expired."""
+    if not config.JWT_SECRET:
+        return None
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(
+            token,
+            config.JWT_SECRET,
+            algorithms=[JWT_ALGORITHM],
+            options={"require": ["sub"]},
+        )
     except jwt.PyJWTError:
         return None
 
@@ -101,6 +108,7 @@ def set_auth_cookie(response: web.Response, token: str) -> None:
         JWT_COOKIE_NAME,
         token,
         httponly=True,
+        secure=config.JWT_COOKIE_SECURE,
         samesite="Lax",
         max_age=JWT_EXPIRY_SECONDS,
         path="/",

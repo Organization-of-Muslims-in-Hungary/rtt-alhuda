@@ -39,6 +39,23 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             approved_by   TEXT
         );""",
     ]),
+    (3, [
+        """CREATE TABLE users_new (
+            id            TEXT PRIMARY KEY,
+            username      TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            password_hash TEXT NOT NULL,
+            role          TEXT NOT NULL DEFAULT 'operator'
+                CHECK (role IN ('admin', 'operator')),
+            status        TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('approved', 'pending', 'rejected')),
+            created_at    REAL NOT NULL,
+            approved_at   REAL,
+            approved_by   TEXT
+        );""",
+        "INSERT INTO users_new SELECT * FROM users;",
+        "DROP TABLE users;",
+        "ALTER TABLE users_new RENAME TO users;",
+    ]),
 ]
 
 LATEST_VERSION = MIGRATIONS[-1][0]
@@ -175,6 +192,23 @@ async def _get_client(db: aiosqlite.Connection, client_id: str) -> dict:
 
 # ── Operator user accounts ────────────────────────────────────────────────────
 
+VALID_USER_ROLES = frozenset({"admin", "operator"})
+VALID_USER_STATUSES = frozenset({"approved", "pending", "rejected"})
+
+
+class InvalidUserField(ValueError):
+    """Raised when role or status is outside the allowed vocabulary."""
+
+
+def _validate_user_role(role: str) -> None:
+    if role not in VALID_USER_ROLES:
+        raise InvalidUserField(f"invalid role: {role}")
+
+
+def _validate_user_status(status: str) -> None:
+    if status not in VALID_USER_STATUSES:
+        raise InvalidUserField(f"invalid status: {status}")
+
 
 async def count_users(db: aiosqlite.Connection) -> int:
     cursor = await db.execute("SELECT COUNT(*) FROM users")
@@ -193,6 +227,8 @@ async def create_user(
     approved_by: Optional[str] = None,
 ) -> dict:
     """Insert a new operator account and return the full row."""
+    _validate_user_role(role)
+    _validate_user_status(status)
     user_id = uuid.uuid4().hex
     now = time.time()
     await db.execute(
@@ -233,6 +269,7 @@ async def set_user_status(
     approved_by: Optional[str] = None,
 ) -> bool:
     """Update approval status. Returns False if the user does not exist."""
+    _validate_user_status(status)
     approved_at = time.time() if status == "approved" else None
     cursor = await db.execute(
         """UPDATE users

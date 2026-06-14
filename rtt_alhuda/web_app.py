@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from aiohttp import ClientSession, WSMsgType, web
+import aiosqlite
 
 from rtt_alhuda.audio_capture import capture_microphone_loop
 from rtt_alhuda.audio_processor import process_audio_loop
@@ -35,7 +36,8 @@ from rtt_alhuda.auth import (
     validate_username,
     verify_password,
 )
-from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
+from rtt_alhuda import config
+from rtt_alhuda.config import validate_auth_config
 
 
 def get_hours_timestamp() -> str:
@@ -399,15 +401,16 @@ async def index_handler(_: web.Request) -> web.StreamResponse:
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client and open the client database."""
 
+    validate_auth_config()
     app["http_client"] = ClientSession()
     app["client_db"] = await client_db.get_db()
     seeded = await client_db.seed_default_admin(
         app["client_db"],
-        DEFAULT_ADMIN_USERNAME,
-        hash_password(DEFAULT_ADMIN_PASSWORD),
+        config.DEFAULT_ADMIN_USERNAME,
+        hash_password(config.DEFAULT_ADMIN_PASSWORD),
     )
     if seeded:
-        log(f"Seeded default admin user '{DEFAULT_ADMIN_USERNAME}' (change KHUTBA_ADMIN_PASSWORD in production)")
+        log(f"Seeded default admin user '{config.DEFAULT_ADMIN_USERNAME}'")
     log_startup_summary()
     log(f"Client database: {client_db.DB_PATH}")
 
@@ -702,13 +705,17 @@ async def auth_register_handler(request: web.Request) -> web.Response:
     if await client_db.get_user_by_username(db, username):
         return web.json_response({"ok": False, "reason": "username_taken"}, status=409)
 
-    user = await client_db.create_user(
-        db,
-        username,
-        hash_password(password),
-        role="operator",
-        status="pending",
-    )
+    try:
+        user = await client_db.create_user(
+            db,
+            username,
+            hash_password(password),
+            role="operator",
+            status="pending",
+        )
+    except aiosqlite.IntegrityError:
+        return web.json_response({"ok": False, "reason": "username_taken"}, status=409)
+
     return web.json_response(
         {"ok": True, "user": public_user(user)},
         status=201,
@@ -775,6 +782,8 @@ async def admin_approve_user_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "reason": "not found"}, status=404)
     if target["role"] == "admin":
         return web.json_response({"ok": False, "reason": "cannot_modify_admin"}, status=400)
+    if target["status"] != "pending":
+        return web.json_response({"ok": False, "reason": "not_pending"}, status=400)
 
     admin = request["user"]
     ok = await client_db.set_user_status(
@@ -795,6 +804,8 @@ async def admin_reject_user_handler(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "reason": "not found"}, status=404)
     if target["role"] == "admin":
         return web.json_response({"ok": False, "reason": "cannot_modify_admin"}, status=400)
+    if target["status"] != "pending":
+        return web.json_response({"ok": False, "reason": "not_pending"}, status=400)
 
     admin = request["user"]
     ok = await client_db.set_user_status(

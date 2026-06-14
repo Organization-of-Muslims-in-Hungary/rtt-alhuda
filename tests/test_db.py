@@ -96,14 +96,14 @@ async def test_migrate_creates_users_table() -> None:
 @pytest.mark.asyncio
 async def test_seed_default_admin_only_once() -> None:
     db = await _memory_db()
+    from rtt_alhuda import config
     from rtt_alhuda.auth import hash_password
-    from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
 
     first = await client_db.seed_default_admin(
-        db, DEFAULT_ADMIN_USERNAME, hash_password(DEFAULT_ADMIN_PASSWORD)
+        db, config.DEFAULT_ADMIN_USERNAME, hash_password(config.DEFAULT_ADMIN_PASSWORD)
     )
     second = await client_db.seed_default_admin(
-        db, DEFAULT_ADMIN_USERNAME, hash_password(DEFAULT_ADMIN_PASSWORD)
+        db, config.DEFAULT_ADMIN_USERNAME, hash_password(config.DEFAULT_ADMIN_PASSWORD)
     )
     assert first is not None
     assert second is None

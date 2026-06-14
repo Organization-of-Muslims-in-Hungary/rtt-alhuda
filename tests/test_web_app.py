@@ -6,8 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from rtt_alhuda import db as client_db
-from rtt_alhuda.config import DEFAULT_ADMIN_PASSWORD, DEFAULT_ADMIN_USERNAME
+from rtt_alhuda import config, db as client_db
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_app import create_app, start_recording, stop_recording
 from rtt_alhuda.web_protocol import send_log, send_sse_control, send_transcription
@@ -23,8 +22,9 @@ async def _admin_headers(client: TestClient) -> dict[str, str]:
     """Log in as the seeded default admin and return Authorization headers."""
     resp = await client.post(
         "/api/auth/login",
-        json={"username": DEFAULT_ADMIN_USERNAME, "password": DEFAULT_ADMIN_PASSWORD},
+        json={"username": config.DEFAULT_ADMIN_USERNAME, "password": config.DEFAULT_ADMIN_PASSWORD},
     )
+    assert resp.status == 200
     token = (await resp.json())["token"]
     return {"Authorization": f"Bearer {token}"}
 
