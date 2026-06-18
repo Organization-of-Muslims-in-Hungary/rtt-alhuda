@@ -49,20 +49,18 @@ Open [http://127.0.0.1:3000](http://127.0.0.1:3000) when the server binds to loc
 
 3. **LAN only:** `0.0.0.0` exposes port 3000 on your local network by design. Do not port-forward it to the public internet without TLS and proper access control.
 
-### One-shot setup script (on the Pi)
+### Raspberry Pi (production hall)
 
-From `rtt-alhuda/` (with `../Khutba-app-frontend` present):
+Use the **[infrastructure](https://github.com/Organization-of-Muslims-in-Hungary/infrastructure)** repo: Podman images, host nginx, TLS, and `https://khutba-app/`.
 
 ```bash
-sudo ./scripts/pi-setup.sh --with-apt
-# If Node from apt is below 20 and npm run build fails:
-sudo ./scripts/pi-setup.sh --with-apt --with-node-repo
+# On the Pi (from infrastructure repo):
+sudo ./scripts/bootstrap-pi.sh --inventory ansible/inventory/pi.yml
 
-# Optional: systemd unit + start now
-sudo ./scripts/pi-setup.sh --with-systemd --start-service
+# After editing /etc/khutba/.env:
+sudo ./scripts/update-stack.sh
+sudo ./scripts/smoke-stack.sh https://khutba-app
 ```
-
-Then point nginx at `scripts/nginx-khutba-frontend.example.conf` (edit `root` and ports) so phones open one URL (React + QR + `/stream` same origin). See `scripts/pi-setup.sh` header for flags.
 
 ## Architecture
 

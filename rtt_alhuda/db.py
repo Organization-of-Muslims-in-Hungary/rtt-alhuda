@@ -1,14 +1,16 @@
 """SQLite database: versioned schema with client registry (and future tables)."""
 
+import os
 import time
 import uuid
+from pathlib import Path
 from typing import Optional
 
 import aiosqlite
 
 from rtt_alhuda.config import REPO_ROOT
 
-DB_PATH = REPO_ROOT / "alhuda.db"
+DB_PATH = Path(os.getenv("KHUTBA_DB_PATH", str(REPO_ROOT / "alhuda.db")))
 
 # ── Schema migrations ─────────────────────────────────────────────────────────
 # Each entry is (version, list_of_sql_statements).
@@ -133,13 +135,25 @@ async def register_client(
         cursor = await db.execute("SELECT id FROM clients WHERE id = ?", (client_id,))
         row = await cursor.fetchone()
         if row:
-            await db.execute(
-                """UPDATE clients
-                   SET name = ?, device_type = ?, screen_w = ?, screen_h = ?,
-                       last_seen = ?, user_agent = ?
-                   WHERE id = ?""",
-                (name, device_type, screen_w, screen_h, now, user_agent, client_id),
-            )
+            # Only overwrite name if the caller actually provided one;
+            # an empty string from an SSE reconnect should not erase a
+            # name that was set via /api/clients/{id}/rename.
+            if name:
+                await db.execute(
+                    """UPDATE clients
+                       SET name = ?, device_type = ?, screen_w = ?, screen_h = ?,
+                           last_seen = ?, user_agent = ?
+                       WHERE id = ?""",
+                    (name, device_type, screen_w, screen_h, now, user_agent, client_id),
+                )
+            else:
+                await db.execute(
+                    """UPDATE clients
+                       SET device_type = ?, screen_w = ?, screen_h = ?,
+                           last_seen = ?, user_agent = ?
+                       WHERE id = ?""",
+                    (device_type, screen_w, screen_h, now, user_agent, client_id),
+                )
             await db.commit()
             return await _get_client(db, client_id)
 
