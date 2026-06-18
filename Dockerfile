@@ -27,6 +27,8 @@ COPY templates/ ./templates/
 
 ENV RTT_ALHUDA_LISTEN_HOST=0.0.0.0
 ENV RTT_ALHUDA_LISTEN_PORT=3000
+# Line-buffer stdout/stderr in containers (no TTY → Python block-buffers by default).
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 3000
 
