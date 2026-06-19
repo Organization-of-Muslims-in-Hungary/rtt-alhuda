@@ -33,6 +33,7 @@ async def capture_microphone_loop(session: ServerSession) -> None:
 
     try:
         with sd.RawInputStream(
+            device="pulse",
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="int16",
