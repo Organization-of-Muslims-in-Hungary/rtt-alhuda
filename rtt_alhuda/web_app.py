@@ -10,7 +10,7 @@ from typing import Optional
 from aiohttp import ClientSession, WSMsgType, web
 import aiosqlite
 
-from rtt_alhuda.audio_capture import capture_microphone_loop
+from rtt_alhuda.audio_capture import capture_microphone_loop, feed_remote_audio
 from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.audio_stream_ws import (
     mic_original_fanout_loop,
@@ -116,14 +116,24 @@ async def stop_recording(session: ServerSession) -> None:
     session.media_tts_queue = None
 
 
-async def start_recording(session: ServerSession, http: ClientSession) -> None:
-    """Reset session state and start microphone capture plus audio processing."""
+async def start_recording(
+    session: ServerSession,
+    http: ClientSession,
+    audio_source: str = "internal",
+) -> None:
+    """Reset session state and start microphone capture plus audio processing.
+
+    *audio_source* controls where PCM comes from:
+      - ``"internal"`` — the server's local microphone (sounddevice)
+      - ``"remote"``  — PCM pushed over a WebSocket from the frontend.
+    """
 
     if session.recording:
         await send_log(session, "Recording already running", "warn")
         return
 
     session.recording = True
+    session.audio_source = audio_source
     session.pcm_buffer.clear()
     session.buffer_start_sample = 0
     session.total_samples_written = 0
@@ -149,11 +159,19 @@ async def start_recording(session: ServerSession, http: ClientSession) -> None:
         for lang in ("en", "hu")
     }
 
-    session.recorder_task = asyncio.create_task(capture_microphone_loop(session))
+    if audio_source == "internal":
+        session.recorder_task = asyncio.create_task(capture_microphone_loop(session))
+    else:
+        session.recorder_task = None
+
     session.processor_task = asyncio.create_task(process_audio_loop(session, http))
     session.mic_sender_task = asyncio.create_task(mic_ws_sender(session))
     session.tts_sender_task = asyncio.create_task(tts_ws_sender(session))
-    await send_log(session, "Recording started")
+
+    await send_log(
+        session,
+        f"Recording started (audio_source={audio_source})",
+    )
 
 
 async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -195,8 +213,11 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                         session.media_tts_language = "hu"
                     else:
                         session.media_tts_language = "en"
+                    audio_source = payload.get("audio_source", "internal")
+                    if audio_source not in ("internal", "remote"):
+                        audio_source = "internal"
                     http: ClientSession = request.app["http_client"]
-                    await start_recording(session, http)
+                    await start_recording(session, http, audio_source=audio_source)
                 elif msg_type == "stop":
                     await stop_recording(session)
                     await send_log(session, "Recording stopped")
@@ -224,6 +245,12 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                     await send_log(
                         session, f"Unknown message type: {msg_type}", "warn"
                     )
+            elif msg.type == WSMsgType.BINARY:
+                data = msg.data
+                if isinstance(data, (bytes, bytearray)) and len(data) > 1:
+                    prefix_byte = data[0]
+                    if prefix_byte == 0x03 and session.recording:
+                        await feed_remote_audio(session, bytes(data[1:]))
             elif msg.type == WSMsgType.ERROR:
                 await send_log(
                     session, f"WebSocket error: {ws.exception()}", "error"
@@ -475,8 +502,13 @@ async def control_handler(request: web.Request) -> web.Response:
     if action == "start":
         if session.recording:
             return web.json_response({"ok": False, "reason": "already_recording"})
+        source = request.query.get("source", "internal")
+        if source not in ("internal", "remote"):
+            return web.json_response(
+                {"ok": False, "reason": "invalid_source"}, status=400
+            )
         http: ClientSession = request.app["http_client"]
-        await start_recording(session, http)
+        await start_recording(session, http, audio_source=source)
         return web.json_response({"ok": True, "action": "started"})
 
     if action == "stop":
