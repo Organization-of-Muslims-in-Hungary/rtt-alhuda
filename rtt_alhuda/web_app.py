@@ -145,28 +145,7 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                     continue
 
                 msg_type = payload.get("type")
-                if msg_type == "start":
-                    lang_raw = (
-                        payload.get("ttsLanguage")
-                        or payload.get("tts_language")
-                        or "en"
-                    )
-                    if isinstance(lang_raw, str) and lang_raw.lower() in (
-                        "hu",
-                        "hungarian",
-                    ):
-                        session.media_tts_language = "hu"
-                    else:
-                        session.media_tts_language = "en"
-                    audio_source = payload.get("audio_source", "internal")
-                    if audio_source not in ("internal", "remote"):
-                        audio_source = "internal"
-                    http: ClientSession = request.app["http_client"]
-                    await start_recording(session, http, audio_source=audio_source)
-                elif msg_type == "stop":
-                    await stop_recording(session)
-                    await send_log(session, "Recording stopped")
-                elif msg_type == "subscribe":
+                if msg_type == "subscribe":
                     stream = payload.get("stream")
                     if stream == "mic":
                         session.mic_subscribers.add(ws)
@@ -362,21 +341,6 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
 
     return response
 
-def _template_response(name: str) -> web.StreamResponse:
-    path = REPO_ROOT / "templates" / name
-    if not path.is_file():
-        log(f"Error: template not found at {path}", "error")
-        return web.Response(status=404, text=f"{name} not found")
-    return web.FileResponse(path)
-
-
-async def index_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the browser UI from templates/index.html."""
-
-    return _template_response("index.html")
-
-
-
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client and open the client database."""
 
@@ -402,16 +366,6 @@ async def on_cleanup(app: web.Application) -> None:
     db = app.get("client_db")
     if db:
         await db.close()
-
-
-async def control_page_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the English phone control page."""
-    return _template_response("control.html")
-
-
-async def control_ar_page_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the Arabic phone control page."""
-    return _template_response("control_ar.html")
 
 
 # ── Pi-specific control helpers ───────────────────────────────────────────────
@@ -829,17 +783,12 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
     session = ServerSession()
     app["session"] = session
-    app.router.add_get("/", index_handler)
-    app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/network-status", network_status_handler)
     app.router.add_get("/stream", debug_ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
     app.router.add_get("/stream/text", text_stream_handler)
-    # Control dashboard (English + Arabic)
-    app.router.add_get("/control", control_page_handler)
-    app.router.add_get("/control_ar", control_ar_page_handler)
     # Control REST API
     app.router.add_get("/api/control/{action}", control_handler)
     app.router.add_get("/api/browser/{action:.*}", browser_handler)
