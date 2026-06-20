@@ -1,6 +1,7 @@
 """Server-side microphone capture into the session PCM buffer."""
 
 import asyncio
+import time
 
 from rtt_alhuda.config import (
     CHANNELS,
@@ -20,6 +21,8 @@ async def feed_remote_audio(session: ServerSession, pcm_bytes: bytes) -> None:
     bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
     sample_count = len(pcm_bytes) // bytes_per_frame
     max_buffer_samples = int(SAMPLE_RATE * MAX_BUFFER_SECONDS)
+
+    session.last_remote_audio_ts = time.monotonic()
 
     async with session.lock:
         session.pcm_buffer.extend(pcm_bytes)
@@ -113,3 +116,62 @@ async def capture_microphone_loop(session: ServerSession) -> None:
     finally:
         session.recording = False
         await send_log(session, "Microphone capture stopped")
+
+
+async def stop_recording(session: ServerSession) -> None:
+    """Stop recording and cancel all background tasks on the session."""
+
+    session.recording = False
+
+    if session.tts_fanout_tasks:
+        for t in list(session.tts_fanout_tasks.values()):
+            if t and not t.done():
+                t.cancel()
+        await asyncio.gather(
+            *session.tts_fanout_tasks.values(),
+            return_exceptions=True,
+        )
+        session.tts_fanout_tasks = None
+    session.tts_queues = None
+
+    if session.original_fanout_task and not session.original_fanout_task.done():
+        session.original_fanout_task.cancel()
+        await asyncio.gather(
+            session.original_fanout_task,
+            return_exceptions=True,
+        )
+    session.original_fanout_task = None
+    session.original_pcm_queue = None
+
+    async with session.lock:
+        for _lang, socks in list(session.tts_satellites.items()):
+            for sat_ws in list(socks):
+                if not sat_ws.closed:
+                    await sat_ws.close(code=1001)
+            socks.clear()
+        for sat_ws in list(session.original_audio_satellites):
+            if not sat_ws.closed:
+                await sat_ws.close(code=1001)
+        session.original_audio_satellites.clear()
+
+    tasks = [
+        task
+        for task in (
+            session.recorder_task,
+            session.processor_task,
+            session.mic_sender_task,
+            session.tts_sender_task,
+        )
+        if task
+    ]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    session.recorder_task = None
+    session.processor_task = None
+    session.mic_sender_task = None
+    session.tts_sender_task = None
+    session.media_mic_queue = None
+    session.media_tts_queue = None

@@ -10,7 +10,11 @@ from typing import Optional
 from aiohttp import ClientSession, WSMsgType, web
 import aiosqlite
 
-from rtt_alhuda.audio_capture import capture_microphone_loop, feed_remote_audio
+from rtt_alhuda.audio_capture import (
+    capture_microphone_loop,
+    feed_remote_audio,
+    stop_recording,
+)
 from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.audio_stream_ws import (
     mic_original_fanout_loop,
@@ -55,65 +59,6 @@ def log(*parts: object) -> None:
 def _get_session(request: web.Request) -> ServerSession:
     """Return the single server-owned session from the application."""
     return request.app["session"]
-
-
-async def stop_recording(session: ServerSession) -> None:
-    """Stop recording and cancel all background tasks on the session."""
-
-    session.recording = False
-
-    if session.tts_fanout_tasks:
-        for t in list(session.tts_fanout_tasks.values()):
-            if t and not t.done():
-                t.cancel()
-        await asyncio.gather(
-            *session.tts_fanout_tasks.values(),
-            return_exceptions=True,
-        )
-        session.tts_fanout_tasks = None
-    session.tts_queues = None
-
-    if session.original_fanout_task and not session.original_fanout_task.done():
-        session.original_fanout_task.cancel()
-        await asyncio.gather(
-            session.original_fanout_task,
-            return_exceptions=True,
-        )
-    session.original_fanout_task = None
-    session.original_pcm_queue = None
-
-    async with session.lock:
-        for _lang, socks in list(session.tts_satellites.items()):
-            for sat_ws in list(socks):
-                if not sat_ws.closed:
-                    await sat_ws.close(code=1001)
-            socks.clear()
-        for sat_ws in list(session.original_audio_satellites):
-            if not sat_ws.closed:
-                await sat_ws.close(code=1001)
-        session.original_audio_satellites.clear()
-
-    tasks = [
-        task
-        for task in (
-            session.recorder_task,
-            session.processor_task,
-            session.mic_sender_task,
-            session.tts_sender_task,
-        )
-        if task
-    ]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    session.recorder_task = None
-    session.processor_task = None
-    session.mic_sender_task = None
-    session.tts_sender_task = None
-    session.media_mic_queue = None
-    session.media_tts_queue = None
 
 
 async def start_recording(
@@ -250,6 +195,8 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if isinstance(data, (bytes, bytearray)) and len(data) > 1:
                     prefix_byte = data[0]
                     if prefix_byte == 0x03 and session.recording:
+                        if session.remote_mic_ws is None:
+                            session.remote_mic_ws = ws
                         await feed_remote_audio(session, bytes(data[1:]))
             elif msg.type == WSMsgType.ERROR:
                 await send_log(
@@ -259,6 +206,11 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
         session.debug_ws_clients.discard(ws)
         session.mic_subscribers.discard(ws)
         session.tts_subscribers.discard(ws)
+        if session.remote_mic_ws is ws:
+            session.remote_mic_ws = None
+            if session.recording and session.audio_source == "remote":
+                await stop_recording(session)
+                await send_log(session, "Remote mic WS disconnected — recording stopped", "warn")
         log("Debug WebSocket client disconnected")
 
     return ws

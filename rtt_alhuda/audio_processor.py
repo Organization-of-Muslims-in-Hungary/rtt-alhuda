@@ -11,10 +11,12 @@ from aiohttp import ClientError, ClientSession
 
 from rtt_alhuda.audio_vad import is_speech_present
 from rtt_alhuda.audio_wav import create_wav_bytes
+from rtt_alhuda.audio_capture import stop_recording
 from rtt_alhuda.config import (
     CHANNELS,
     CONTEXT_CHUNK_COUNT,
     PROCESSING_INTERVAL_SECONDS,
+    REMOTE_MIC_TIMEOUT_SECONDS,
     SAMPLE_RATE,
     SAMPLE_WIDTH_BYTES,
 )
@@ -338,6 +340,22 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
                     "info",
                     timing=t.snapshot(),
                 )
+
+                # Remote mic watchdog: auto-stop if no audio arrived for too long.
+                if (
+                    session.audio_source == "remote"
+                    and session.last_remote_audio_ts > 0
+                    and time.monotonic() - session.last_remote_audio_ts > REMOTE_MIC_TIMEOUT_SECONDS
+                ):
+                    await send_log(
+                        session,
+                        f"Remote mic timeout — no audio for {REMOTE_MIC_TIMEOUT_SECONDS}s, stopping recording",
+                        "warn",
+                    )
+                    asyncio.create_task(stop_recording(session), name="remote-mic-timeout-stop")
+                    session.recording = False
+                    continue
+
                 async with session.lock:
                     session.last_chunk_end_sample = new_audio_end_sample
                     # Add an empty chunk to history so the context window anchor moves forward.
@@ -384,4 +402,4 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
             next_cycle_at = request_started_at + PROCESSING_INTERVAL_SECONDS
 
     finally:
-        await send_log(session, "Audio processing stopped")
+        await asyncio.shield(send_log(session, "Audio processing stopped"))
