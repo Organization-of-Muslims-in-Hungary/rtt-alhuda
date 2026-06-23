@@ -15,6 +15,8 @@ from rtt_alhuda.audio_capture import stop_recording
 from rtt_alhuda.config import (
     CHANNELS,
     CONTEXT_CHUNK_COUNT,
+    OPENROUTER_RETRY_COUNT,
+    OPENROUTER_TIMEOUT_SECONDS,
     PROCESSING_INTERVAL_SECONDS,
     REMOTE_MIC_TIMEOUT_SECONDS,
     SAMPLE_RATE,
@@ -120,6 +122,7 @@ async def _process_chunk(
     original_hu: str,
     chunk_duration_seconds: float,
     timing: _CycleTiming,
+    timeout_s: float = OPENROUTER_TIMEOUT_SECONDS,
 ):
     try:
         start_time = time.time()
@@ -129,6 +132,7 @@ async def _process_chunk(
             original_ar,
             original_en,
             original_hu,
+            timeout_s=timeout_s,
         )
         timing.api_ms = int((time.time() - start_time) * 1000)
 
@@ -219,7 +223,14 @@ async def _process_chunk(
                 name=f"tts-satellite-{lang}",
             )
 
-    except (asyncio.TimeoutError, ClientError, RuntimeError, ValueError) as exc:
+    except (asyncio.TimeoutError, ClientError) as exc:
+        await send_log(
+            session,
+            f"Network error in chunk ({type(exc).__name__}): {exc}",
+            "error",
+        )
+        raise
+    except (RuntimeError, ValueError) as exc:
         await send_log(
             session,
             f"Error processing chunk ({type(exc).__name__}): {exc} "
@@ -381,24 +392,65 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
 
             request_started_at = time.monotonic()
 
-            await _process_chunk(
-                session,
-                http,
-                wav_b64,
-                new_audio_start_sample,
-                new_audio_end_sample,
-                original_ar,
-                original_en,
-                original_hu,
-                chunk_duration_seconds=total_samples / SAMPLE_RATE,
-                timing=t,
-            )
+            chunk_ok = False
+            context_reset = False
+            for attempt in range(1 + OPENROUTER_RETRY_COUNT):
+                try:
+                    await _process_chunk(
+                        session,
+                        http,
+                        wav_b64,
+                        new_audio_start_sample,
+                        new_audio_end_sample,
+                        original_ar,
+                        original_en,
+                        original_hu,
+                        chunk_duration_seconds=total_samples / SAMPLE_RATE,
+                        timing=t,
+                        timeout_s=OPENROUTER_TIMEOUT_SECONDS,
+                    )
+                    chunk_ok = True
+                    break
+                except (asyncio.TimeoutError, ClientError) as exc:
+                    if attempt < OPENROUTER_RETRY_COUNT:
+                        await send_log(
+                            session,
+                            f"OpenRouter timeout (attempt {attempt + 1}/{1 + OPENROUTER_RETRY_COUNT}), "
+                            "retrying with accumulated audio",
+                            "warn",
+                        )
+                        async with session.lock:
+                            new_end = session.total_samples_written
+                            new_audio_end_sample = new_end
+                            end_offset = new_end - session.buffer_start_sample
+                            end_byte = end_offset * bytes_per_frame
+                            start_offset = start_sample - session.buffer_start_sample
+                            start_byte = max(0, start_offset) * bytes_per_frame
+                            if start_byte < len(session.pcm_buffer):
+                                chunk_pcm = bytes(session.pcm_buffer[start_byte:end_byte])
+                                total_samples = new_end - start_sample
+                            else:
+                                chunk_pcm = b""
+                                total_samples = 0
+                        if not chunk_pcm:
+                            break
+                        wav_bytes = create_wav_bytes(chunk_pcm, SAMPLE_RATE, CHANNELS)
+                        wav_b64 = base64.b64encode(wav_bytes).decode("ascii")
+                    else:
+                        context_reset = True
+                        async with session.lock:
+                            session.last_chunk_end_sample = session.total_samples_written
+                            session.chunk_history.clear()
+                        await send_log(
+                            session,
+                            "OpenRouter unreachable — resetting context, continuing with fresh audio",
+                            "error",
+                        )
 
-            async with session.lock:
-                session.last_chunk_end_sample = new_audio_end_sample
+            if chunk_ok and not context_reset:
+                async with session.lock:
+                    session.last_chunk_end_sample = new_audio_end_sample
 
-            # Keep a request-start-based cadence: every PROCESSING_INTERVAL_SECONDS
-            # from request start, or immediately after slower responses.
             next_cycle_at = request_started_at + PROCESSING_INTERVAL_SECONDS
 
     finally:

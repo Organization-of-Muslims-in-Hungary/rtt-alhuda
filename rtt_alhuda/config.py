@@ -23,6 +23,8 @@ SAMPLE_WIDTH_BYTES = 2
 FRAME_CHUNK_SECONDS = 0.1
 MAX_BUFFER_SECONDS = 120  # Increased to prevent dropping audio during API delays
 REMOTE_MIC_TIMEOUT_SECONDS = 15  # Auto-stop remote mic if no audio arrives for this long
+OPENROUTER_TIMEOUT_SECONDS = 5  # Fail-fast timeout — kill request after N seconds
+OPENROUTER_RETRY_COUNT = 1  # Number of retries on timeout (0 = no retry)
 
 OPENROUTER_TTS_URL = os.getenv(
     "OPENROUTER_TTS_URL", "https://openrouter.ai/api/v1/tts"
