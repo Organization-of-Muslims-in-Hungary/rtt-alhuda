@@ -10,7 +10,11 @@ from typing import Optional
 from aiohttp import ClientSession, WSMsgType, web
 import aiosqlite
 
-from rtt_alhuda.audio_capture import capture_microphone_loop
+from rtt_alhuda.audio_capture import (
+    capture_microphone_loop,
+    feed_remote_audio,
+    stop_recording,
+)
 from rtt_alhuda.audio_processor import process_audio_loop
 from rtt_alhuda.audio_stream_ws import (
     mic_original_fanout_loop,
@@ -18,7 +22,7 @@ from rtt_alhuda.audio_stream_ws import (
     tts_fanout_loop,
     tts_ws_sender,
 )
-from rtt_alhuda.config import REPO_ROOT
+from rtt_alhuda.config import CHANNELS, REPO_ROOT, SAMPLE_WIDTH_BYTES
 from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log, send_sse_control
@@ -57,78 +61,34 @@ def _get_session(request: web.Request) -> ServerSession:
     return request.app["session"]
 
 
-async def stop_recording(session: ServerSession) -> None:
-    """Stop recording and cancel all background tasks on the session."""
+async def start_recording(
+    session: ServerSession,
+    http: ClientSession,
+    audio_source: str = "internal",
+) -> None:
+    """Reset session state and start microphone capture plus audio processing.
 
-    session.recording = False
-
-    if session.tts_fanout_tasks:
-        for t in list(session.tts_fanout_tasks.values()):
-            if t and not t.done():
-                t.cancel()
-        await asyncio.gather(
-            *session.tts_fanout_tasks.values(),
-            return_exceptions=True,
-        )
-        session.tts_fanout_tasks = None
-    session.tts_queues = None
-
-    if session.original_fanout_task and not session.original_fanout_task.done():
-        session.original_fanout_task.cancel()
-        await asyncio.gather(
-            session.original_fanout_task,
-            return_exceptions=True,
-        )
-    session.original_fanout_task = None
-    session.original_pcm_queue = None
-
-    async with session.lock:
-        for _lang, socks in list(session.tts_satellites.items()):
-            for sat_ws in list(socks):
-                if not sat_ws.closed:
-                    await sat_ws.close(code=1001)
-            socks.clear()
-        for sat_ws in list(session.original_audio_satellites):
-            if not sat_ws.closed:
-                await sat_ws.close(code=1001)
-        session.original_audio_satellites.clear()
-
-    tasks = [
-        task
-        for task in (
-            session.recorder_task,
-            session.processor_task,
-            session.mic_sender_task,
-            session.tts_sender_task,
-        )
-        if task
-    ]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
-
-    session.recorder_task = None
-    session.processor_task = None
-    session.mic_sender_task = None
-    session.tts_sender_task = None
-    session.media_mic_queue = None
-    session.media_tts_queue = None
-
-
-async def start_recording(session: ServerSession, http: ClientSession) -> None:
-    """Reset session state and start microphone capture plus audio processing."""
+    *audio_source* controls where PCM comes from:
+      - ``"internal"`` — the server's local microphone (sounddevice)
+      - ``"remote"``  — PCM pushed over a WebSocket from the frontend.
+    """
 
     if session.recording:
         await send_log(session, "Recording already running", "warn")
         return
 
     session.recording = True
+    session.audio_source = audio_source
     session.pcm_buffer.clear()
     session.buffer_start_sample = 0
     session.total_samples_written = 0
     session.chunk_history.clear()
     session.last_chunk_end_sample = 0
+    # Clear stale remote-mic state from previous sessions and initialise the
+    # watchdog timestamp so a remote recording that never receives audio will
+    # still time out.
+    session.remote_mic_ws = None
+    session.last_remote_audio_ts = time.monotonic() if audio_source == "remote" else 0.0
 
     session.media_mic_queue = asyncio.Queue(maxsize=50)
     session.media_tts_queue = asyncio.Queue(maxsize=8)
@@ -149,11 +109,19 @@ async def start_recording(session: ServerSession, http: ClientSession) -> None:
         for lang in ("en", "hu")
     }
 
-    session.recorder_task = asyncio.create_task(capture_microphone_loop(session))
+    if audio_source == "internal":
+        session.recorder_task = asyncio.create_task(capture_microphone_loop(session))
+    else:
+        session.recorder_task = None
+
     session.processor_task = asyncio.create_task(process_audio_loop(session, http))
     session.mic_sender_task = asyncio.create_task(mic_ws_sender(session))
     session.tts_sender_task = asyncio.create_task(tts_ws_sender(session))
-    await send_log(session, "Recording started")
+
+    await send_log(
+        session,
+        f"Recording started (audio_source={audio_source})",
+    )
 
 
 async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -182,25 +150,7 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                     continue
 
                 msg_type = payload.get("type")
-                if msg_type == "start":
-                    lang_raw = (
-                        payload.get("ttsLanguage")
-                        or payload.get("tts_language")
-                        or "en"
-                    )
-                    if isinstance(lang_raw, str) and lang_raw.lower() in (
-                        "hu",
-                        "hungarian",
-                    ):
-                        session.media_tts_language = "hu"
-                    else:
-                        session.media_tts_language = "en"
-                    http: ClientSession = request.app["http_client"]
-                    await start_recording(session, http)
-                elif msg_type == "stop":
-                    await stop_recording(session)
-                    await send_log(session, "Recording stopped")
-                elif msg_type == "subscribe":
+                if msg_type == "subscribe":
                     stream = payload.get("stream")
                     if stream == "mic":
                         session.mic_subscribers.add(ws)
@@ -224,6 +174,22 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                     await send_log(
                         session, f"Unknown message type: {msg_type}", "warn"
                     )
+            elif msg.type == WSMsgType.BINARY:
+                data = msg.data
+                if isinstance(data, (bytes, bytearray)) and len(data) > 1:
+                    prefix_byte = data[0]
+                    if prefix_byte == 0x03 and session.recording:
+                        pcm_payload = bytes(data[1:])
+                        bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
+                        if len(pcm_payload) == 0 or len(pcm_payload) % bytes_per_frame != 0:
+                            continue
+                        # Validate before claiming ownership so a malformed
+                        # first frame cannot lock out the real provider.
+                        if session.remote_mic_ws is None:
+                            session.remote_mic_ws = ws
+                        if session.remote_mic_ws is not ws:
+                            continue
+                        await feed_remote_audio(session, pcm_payload)
             elif msg.type == WSMsgType.ERROR:
                 await send_log(
                     session, f"WebSocket error: {ws.exception()}", "error"
@@ -232,6 +198,11 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
         session.debug_ws_clients.discard(ws)
         session.mic_subscribers.discard(ws)
         session.tts_subscribers.discard(ws)
+        if session.remote_mic_ws is ws:
+            session.remote_mic_ws = None
+            if session.recording and session.audio_source == "remote":
+                await stop_recording(session)
+                await send_log(session, "Remote mic WS disconnected — recording stopped", "warn")
         log("Debug WebSocket client disconnected")
 
     return ws
@@ -383,21 +354,6 @@ async def text_stream_handler(request: web.Request) -> web.StreamResponse:
 
     return response
 
-def _template_response(name: str) -> web.StreamResponse:
-    path = REPO_ROOT / "templates" / name
-    if not path.is_file():
-        log(f"Error: template not found at {path}", "error")
-        return web.Response(status=404, text=f"{name} not found")
-    return web.FileResponse(path)
-
-
-async def index_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the browser UI from templates/index.html."""
-
-    return _template_response("index.html")
-
-
-
 async def on_startup(app: web.Application) -> None:
     """Create the shared HTTP client and open the client database."""
 
@@ -423,16 +379,6 @@ async def on_cleanup(app: web.Application) -> None:
     db = app.get("client_db")
     if db:
         await db.close()
-
-
-async def control_page_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the English phone control page."""
-    return _template_response("control.html")
-
-
-async def control_ar_page_handler(_: web.Request) -> web.StreamResponse:
-    """Serve the Arabic phone control page."""
-    return _template_response("control_ar.html")
 
 
 # ── Pi-specific control helpers ───────────────────────────────────────────────
@@ -475,8 +421,13 @@ async def control_handler(request: web.Request) -> web.Response:
     if action == "start":
         if session.recording:
             return web.json_response({"ok": False, "reason": "already_recording"})
+        source = request.query.get("source", "internal")
+        if source not in ("internal", "remote"):
+            return web.json_response(
+                {"ok": False, "reason": "invalid_source"}, status=400
+            )
         http: ClientSession = request.app["http_client"]
-        await start_recording(session, http)
+        await start_recording(session, http, audio_source=source)
         return web.json_response({"ok": True, "action": "started"})
 
     if action == "stop":
@@ -845,17 +796,12 @@ def create_app() -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
     session = ServerSession()
     app["session"] = session
-    app.router.add_get("/", index_handler)
-    app.router.add_get("/index.html", index_handler)
     app.router.add_get("/api/lan-ipv4", lan_ipv4_handler)
     app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/network-status", network_status_handler)
     app.router.add_get("/stream", debug_ws_handler)
     app.router.add_get(r"/stream/tts/{lang}", tts_stream_handler)
     app.router.add_get("/stream/text", text_stream_handler)
-    # Control dashboard (English + Arabic)
-    app.router.add_get("/control", control_page_handler)
-    app.router.add_get("/control_ar", control_ar_page_handler)
     # Control REST API
     app.router.add_get("/api/control/{action}", control_handler)
     app.router.add_get("/api/browser/{action:.*}", browser_handler)

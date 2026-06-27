@@ -249,6 +249,180 @@ async def test_network_status_without_ws() -> None:
         assert data["sse_clients"] == 0
 
 
+# ── Remote mic / audio_source tests ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_control_start_with_source_remote():
+    """GET /api/control/start?source=remote sets audio_source and starts."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
+        resp = await client.get(
+            "/api/control/start?source=remote", headers=headers
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["ok"] is True
+        assert data["action"] == "started"
+        assert app["session"].audio_source == "remote"
+        assert app["session"].recording is True
+        assert app["session"].recorder_task is None
+        await stop_recording(app["session"])
+
+
+@pytest.mark.asyncio
+async def test_control_start_invalid_source():
+    """Calling start with invalid source returns 400."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
+        resp = await client.get(
+            "/api/control/start?source=bluetooth", headers=headers
+        )
+        assert resp.status == 400
+        data = await resp.json()
+        assert data["reason"] == "invalid_source"
+
+
+@pytest.mark.asyncio
+async def test_control_start_defaults_to_internal():
+    """Calling start without source defaults to internal."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
+        resp = await client.get("/api/control/start", headers=headers)
+        assert resp.status == 200
+        assert app["session"].audio_source == "internal"
+        assert app["session"].recorder_task is not None
+        await stop_recording(app["session"])
+
+
+@pytest.mark.asyncio
+async def test_remote_mic_recorder_task_not_created():
+    """start_recording with audio_source=remote leaves recorder_task None."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.recorder_task is None
+    assert session.recording is True
+    assert session.audio_source == "remote"
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_internal_mic_recorder_task_created():
+    """start_recording with audio_source=internal creates recorder_task."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="internal")
+    assert session.recorder_task is not None
+    assert session.audio_source == "internal"
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_stop_recording_preserves_audio_source():
+    """After stop_recording, recording flag resets but audio_source persists."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.recording is True
+    await stop_recording(session)
+    assert session.recording is False
+    # audio_source field itself is not cleared — only used during start
+    assert session.audio_source == "remote"
+
+
+@pytest.mark.asyncio
+async def test_stop_recording_clears_remote_mic_state():
+    """stop_recording resets remote_mic_ws and last_remote_audio_ts."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    session.remote_mic_ws = AsyncMock()
+    session.last_remote_audio_ts = 99.0
+    await stop_recording(session)
+    assert session.remote_mic_ws is None
+    assert session.last_remote_audio_ts == 0.0
+
+
+@pytest.mark.asyncio
+async def test_start_recording_inits_remote_timestamp():
+    """start_recording(remote) seeds last_remote_audio_ts for the watchdog."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.last_remote_audio_ts > 0
+    assert session.remote_mic_ws is None
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_start_recording_clears_stale_remote_ws():
+    """Stale remote_mic_ws from a previous session is cleared on new start."""
+    session = ServerSession()
+    http = AsyncMock()
+    session.remote_mic_ws = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.remote_mic_ws is None
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_rejects_empty():
+    """Empty PCM payload is silently dropped."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+
+    session = ServerSession()
+    session.recording = True
+    await feed_remote_audio(session, b"")
+    assert session.total_samples_written == 0
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_trims_unaligned():
+    """Payload not a multiple of frame size is trimmed to the last full frame."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+    from rtt_alhuda.config import CHANNELS, SAMPLE_WIDTH_BYTES
+
+    session = ServerSession()
+    session.recording = True
+    bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
+    # 3 full frames + 1 trailing byte
+    pcm = b"\x00" * (bytes_per_frame * 3 + 1)
+    await feed_remote_audio(session, pcm)
+    assert session.total_samples_written == 3
+    async with session.lock:
+        assert len(session.pcm_buffer) == bytes_per_frame * 3
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_rejects_sub_frame():
+    """Payload smaller than one frame is dropped entirely."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+    from rtt_alhuda.config import CHANNELS, SAMPLE_WIDTH_BYTES
+
+    session = ServerSession()
+    session.recording = True
+    pcm = b"\x00"  # less than one frame
+    await feed_remote_audio(session, pcm)
+    assert session.total_samples_written == 0
+
+
+@pytest.mark.asyncio
+async def test_control_status_shows_recording():
+    """Status endpoint should reflect recording state after remote start."""
+    app = create_app()
+    async with TestClient(TestServer(app)) as client:
+        headers = await _admin_headers(client)
+        await client.get("/api/control/start?source=remote", headers=headers)
+        resp = await client.get("/api/control/status", headers=headers)
+        data = await resp.json()
+        assert data["recording"] is True
+        await stop_recording(app["session"])
+
+
 # ── Recording lifecycle tests ────────────────────────────────────────────────
 
 

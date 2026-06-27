@@ -1,11 +1,12 @@
 """OpenRouter chat/completions API for live transcription."""
 
+import asyncio
 import json
 import os
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
 
-from rtt_alhuda.config import OPENROUTER_API_URL, OPENROUTER_MODEL
+from rtt_alhuda.config import OPENROUTER_API_URL, OPENROUTER_MODEL, OPENROUTER_TIMEOUT_SECONDS
 from rtt_alhuda import openrouter_debug as ord
 
 
@@ -15,6 +16,7 @@ async def send_chunk_to_openrouter(
     original_ar: str,
     original_en: str,
     original_hu: str,
+    timeout_s: float = OPENROUTER_TIMEOUT_SECONDS,
 ) -> dict:
     """Send one audio window to OpenRouter and return the parsed JSON result."""
 
@@ -165,7 +167,7 @@ async def send_chunk_to_openrouter(
             OPENROUTER_API_URL,
             json=body,
             headers=headers,
-            timeout=ClientTimeout(total=120),
+            timeout=ClientTimeout(total=timeout_s),
         ) as resp:
             raw_text = await resp.text()
             if resp.status < 200 or resp.status >= 300:
@@ -187,6 +189,9 @@ async def send_chunk_to_openrouter(
             except json.JSONDecodeError as exc:
                 ord.error("chat/completions: response is not JSON |", repr(raw_text[:500]))
                 raise RuntimeError(f"OpenRouter returned non-JSON: {exc}") from exc
+    except asyncio.TimeoutError:
+        ord.error("chat/completions timeout after", timeout_s, "s")
+        raise
     except ClientError as exc:
         ord.error("chat/completions network error:", repr(exc))
         raise RuntimeError(f"OpenRouter connection error: {exc}") from exc

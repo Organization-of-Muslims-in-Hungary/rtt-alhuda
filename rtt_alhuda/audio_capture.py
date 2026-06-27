@@ -1,6 +1,7 @@
 """Server-side microphone capture into the session PCM buffer."""
 
 import asyncio
+import time
 
 from rtt_alhuda.config import (
     CHANNELS,
@@ -11,6 +12,48 @@ from rtt_alhuda.config import (
 )
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log
+
+
+async def feed_remote_audio(session: ServerSession, pcm_bytes: bytes) -> None:
+    """Inject PCM data received from a remote (browser) mic into the session
+    buffer and fan-out queues — same logic as the native capture loop."""
+
+    bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
+    # Trim to a whole number of frames so trailing bytes never misalign the buffer.
+    aligned_len = (len(pcm_bytes) // bytes_per_frame) * bytes_per_frame
+    if aligned_len == 0:
+        return
+    pcm_bytes = pcm_bytes[:aligned_len]
+    sample_count = aligned_len // bytes_per_frame
+    max_buffer_samples = int(SAMPLE_RATE * MAX_BUFFER_SECONDS)
+
+    session.last_remote_audio_ts = time.monotonic()
+
+    async with session.lock:
+        session.pcm_buffer.extend(pcm_bytes)
+        session.total_samples_written += sample_count
+
+        available_samples = (
+            session.total_samples_written - session.buffer_start_sample
+        )
+        overflow_samples = available_samples - max_buffer_samples
+        if overflow_samples > 0:
+            overflow_bytes = overflow_samples * bytes_per_frame
+            del session.pcm_buffer[:overflow_bytes]
+            session.buffer_start_sample += overflow_samples
+
+    mic_q = session.media_mic_queue
+    if mic_q is not None:
+        try:
+            mic_q.put_nowait(pcm_bytes)
+        except asyncio.QueueFull:
+            pass
+    orig_q = session.original_pcm_queue
+    if orig_q is not None:
+        try:
+            orig_q.put_nowait(pcm_bytes)
+        except asyncio.QueueFull:
+            pass
 
 
 async def capture_microphone_loop(session: ServerSession) -> None:
@@ -78,3 +121,64 @@ async def capture_microphone_loop(session: ServerSession) -> None:
     finally:
         session.recording = False
         await send_log(session, "Microphone capture stopped")
+
+
+async def stop_recording(session: ServerSession) -> None:
+    """Stop recording and cancel all background tasks on the session."""
+
+    session.recording = False
+
+    if session.tts_fanout_tasks:
+        for t in list(session.tts_fanout_tasks.values()):
+            if t and not t.done():
+                t.cancel()
+        await asyncio.gather(
+            *session.tts_fanout_tasks.values(),
+            return_exceptions=True,
+        )
+        session.tts_fanout_tasks = None
+    session.tts_queues = None
+
+    if session.original_fanout_task and not session.original_fanout_task.done():
+        session.original_fanout_task.cancel()
+        await asyncio.gather(
+            session.original_fanout_task,
+            return_exceptions=True,
+        )
+    session.original_fanout_task = None
+    session.original_pcm_queue = None
+
+    async with session.lock:
+        for _lang, socks in list(session.tts_satellites.items()):
+            for sat_ws in list(socks):
+                if not sat_ws.closed:
+                    await sat_ws.close(code=1001)
+            socks.clear()
+        for sat_ws in list(session.original_audio_satellites):
+            if not sat_ws.closed:
+                await sat_ws.close(code=1001)
+        session.original_audio_satellites.clear()
+
+    tasks = [
+        task
+        for task in (
+            session.recorder_task,
+            session.processor_task,
+            session.mic_sender_task,
+            session.tts_sender_task,
+        )
+        if task
+    ]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    session.recorder_task = None
+    session.processor_task = None
+    session.mic_sender_task = None
+    session.tts_sender_task = None
+    session.media_mic_queue = None
+    session.media_tts_queue = None
+    session.remote_mic_ws = None
+    session.last_remote_audio_ts = 0.0

@@ -1,6 +1,7 @@
 """Server-owned session state (decoupled from any single WebSocket)."""
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -37,6 +38,9 @@ class ServerSession:
     recorder_task: Optional[asyncio.Task] = None
     processor_task: Optional[asyncio.Task] = None
     recording: bool = False
+    audio_source: str = "remote"  # "internal" (sounddevice) or "remote" (browser WS)
+    last_remote_audio_ts: float = 0.0  # monotonic timestamp of last feed_remote_audio call
+    remote_mic_ws: Optional[web.WebSocketResponse] = None  # WS that is providing remote PCM
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     last_chunk_end_sample: int = 0
     media_tts_language: str = "en"
