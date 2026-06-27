@@ -179,15 +179,15 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if isinstance(data, (bytes, bytearray)) and len(data) > 1:
                     prefix_byte = data[0]
                     if prefix_byte == 0x03 and session.recording:
-                        # Only the first WS to send 0x03 becomes the owner;
-                        # ignore frames from any other socket.
-                        if session.remote_mic_ws is None:
-                            session.remote_mic_ws = ws
-                        if session.remote_mic_ws is not ws:
-                            continue
                         pcm_payload = bytes(data[1:])
                         bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
                         if len(pcm_payload) == 0 or len(pcm_payload) % bytes_per_frame != 0:
+                            continue
+                        # Validate before claiming ownership so a malformed
+                        # first frame cannot lock out the real provider.
+                        if session.remote_mic_ws is None:
+                            session.remote_mic_ws = ws
+                        if session.remote_mic_ws is not ws:
                             continue
                         await feed_remote_audio(session, pcm_payload)
             elif msg.type == WSMsgType.ERROR:
