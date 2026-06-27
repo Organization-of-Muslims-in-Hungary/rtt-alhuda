@@ -27,6 +27,9 @@ from rtt_alhuda.transcription_openrouter import send_chunk_to_openrouter
 from rtt_alhuda.tts_openrouter import TtsLanguage, synthesize_speech_bytes
 from rtt_alhuda.web_protocol import send_log, send_transcription
 
+# Strong references for fire-and-forget tasks so they aren't GC'd mid-flight.
+_background_tasks: set[asyncio.Task] = set()
+
 
 @dataclass
 class _CycleTiming:
@@ -328,6 +331,24 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
 
             t.buffer_copy_ms = int((time.monotonic() - _t0) * 1000)
 
+            # Remote mic watchdog: auto-stop if no audio arrived for too long.
+            # Runs every iteration (before early-out paths) so remote sessions
+            # time out even before the first frame arrives.
+            if session.audio_source == "remote" and session.last_remote_audio_ts > 0:
+                if time.monotonic() - session.last_remote_audio_ts > REMOTE_MIC_TIMEOUT_SECONDS:
+                    await send_log(
+                        session,
+                        f"Remote mic timeout — no audio for {REMOTE_MIC_TIMEOUT_SECONDS}s, stopping recording",
+                        "warn",
+                    )
+                    _stop_task = asyncio.create_task(
+                        stop_recording(session), name="remote-mic-timeout-stop"
+                    )
+                    _background_tasks.add(_stop_task)
+                    _stop_task.add_done_callback(_background_tasks.discard)
+                    session.recording = False
+                    continue
+
             if not chunk_pcm:
                 t.cycle_total_ms = int((time.monotonic() - t.cycle_start) * 1000)
                 t.skipped = True
@@ -351,21 +372,6 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
                     "info",
                     timing=t.snapshot(),
                 )
-
-                # Remote mic watchdog: auto-stop if no audio arrived for too long.
-                if (
-                    session.audio_source == "remote"
-                    and session.last_remote_audio_ts > 0
-                    and time.monotonic() - session.last_remote_audio_ts > REMOTE_MIC_TIMEOUT_SECONDS
-                ):
-                    await send_log(
-                        session,
-                        f"Remote mic timeout — no audio for {REMOTE_MIC_TIMEOUT_SECONDS}s, stopping recording",
-                        "warn",
-                    )
-                    asyncio.create_task(stop_recording(session), name="remote-mic-timeout-stop")
-                    session.recording = False
-                    continue
 
                 async with session.lock:
                     session.last_chunk_end_sample = new_audio_end_sample

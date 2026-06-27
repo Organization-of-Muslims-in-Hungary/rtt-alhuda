@@ -22,7 +22,7 @@ from rtt_alhuda.audio_stream_ws import (
     tts_fanout_loop,
     tts_ws_sender,
 )
-from rtt_alhuda.config import REPO_ROOT
+from rtt_alhuda.config import CHANNELS, REPO_ROOT, SAMPLE_WIDTH_BYTES
 from rtt_alhuda.lan_detect import detect_lan_ipv4
 from rtt_alhuda.models import ServerSession
 from rtt_alhuda.web_protocol import send_log, send_sse_control
@@ -84,6 +84,11 @@ async def start_recording(
     session.total_samples_written = 0
     session.chunk_history.clear()
     session.last_chunk_end_sample = 0
+    # Clear stale remote-mic state from previous sessions and initialise the
+    # watchdog timestamp so a remote recording that never receives audio will
+    # still time out.
+    session.remote_mic_ws = None
+    session.last_remote_audio_ts = time.monotonic() if audio_source == "remote" else 0.0
 
     session.media_mic_queue = asyncio.Queue(maxsize=50)
     session.media_tts_queue = asyncio.Queue(maxsize=8)
@@ -174,9 +179,17 @@ async def debug_ws_handler(request: web.Request) -> web.WebSocketResponse:
                 if isinstance(data, (bytes, bytearray)) and len(data) > 1:
                     prefix_byte = data[0]
                     if prefix_byte == 0x03 and session.recording:
+                        # Only the first WS to send 0x03 becomes the owner;
+                        # ignore frames from any other socket.
                         if session.remote_mic_ws is None:
                             session.remote_mic_ws = ws
-                        await feed_remote_audio(session, bytes(data[1:]))
+                        if session.remote_mic_ws is not ws:
+                            continue
+                        pcm_payload = bytes(data[1:])
+                        bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
+                        if len(pcm_payload) == 0 or len(pcm_payload) % bytes_per_frame != 0:
+                            continue
+                        await feed_remote_audio(session, pcm_payload)
             elif msg.type == WSMsgType.ERROR:
                 await send_log(
                     session, f"WebSocket error: {ws.exception()}", "error"

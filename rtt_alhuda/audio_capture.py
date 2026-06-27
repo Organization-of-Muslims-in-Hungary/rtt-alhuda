@@ -19,7 +19,12 @@ async def feed_remote_audio(session: ServerSession, pcm_bytes: bytes) -> None:
     buffer and fan-out queues — same logic as the native capture loop."""
 
     bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
-    sample_count = len(pcm_bytes) // bytes_per_frame
+    # Trim to a whole number of frames so trailing bytes never misalign the buffer.
+    aligned_len = (len(pcm_bytes) // bytes_per_frame) * bytes_per_frame
+    if aligned_len == 0:
+        return
+    pcm_bytes = pcm_bytes[:aligned_len]
+    sample_count = aligned_len // bytes_per_frame
     max_buffer_samples = int(SAMPLE_RATE * MAX_BUFFER_SECONDS)
 
     session.last_remote_audio_ts = time.monotonic()
@@ -175,3 +180,5 @@ async def stop_recording(session: ServerSession) -> None:
     session.tts_sender_task = None
     session.media_mic_queue = None
     session.media_tts_queue = None
+    session.remote_mic_ws = None
+    session.last_remote_audio_ts = 0.0

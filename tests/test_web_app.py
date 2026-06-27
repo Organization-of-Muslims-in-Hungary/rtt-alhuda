@@ -322,7 +322,7 @@ async def test_internal_mic_recorder_task_created():
 
 
 @pytest.mark.asyncio
-async def test_stop_recording_clears_audio_source():
+async def test_stop_recording_preserves_audio_source():
     """After stop_recording, recording flag resets but audio_source persists."""
     session = ServerSession()
     http = AsyncMock()
@@ -332,6 +332,82 @@ async def test_stop_recording_clears_audio_source():
     assert session.recording is False
     # audio_source field itself is not cleared — only used during start
     assert session.audio_source == "remote"
+
+
+@pytest.mark.asyncio
+async def test_stop_recording_clears_remote_mic_state():
+    """stop_recording resets remote_mic_ws and last_remote_audio_ts."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    session.remote_mic_ws = AsyncMock()
+    session.last_remote_audio_ts = 99.0
+    await stop_recording(session)
+    assert session.remote_mic_ws is None
+    assert session.last_remote_audio_ts == 0.0
+
+
+@pytest.mark.asyncio
+async def test_start_recording_inits_remote_timestamp():
+    """start_recording(remote) seeds last_remote_audio_ts for the watchdog."""
+    session = ServerSession()
+    http = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.last_remote_audio_ts > 0
+    assert session.remote_mic_ws is None
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_start_recording_clears_stale_remote_ws():
+    """Stale remote_mic_ws from a previous session is cleared on new start."""
+    session = ServerSession()
+    http = AsyncMock()
+    session.remote_mic_ws = AsyncMock()
+    await start_recording(session, http, audio_source="remote")
+    assert session.remote_mic_ws is None
+    await stop_recording(session)
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_rejects_empty():
+    """Empty PCM payload is silently dropped."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+
+    session = ServerSession()
+    session.recording = True
+    await feed_remote_audio(session, b"")
+    assert session.total_samples_written == 0
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_trims_unaligned():
+    """Payload not a multiple of frame size is trimmed to the last full frame."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+    from rtt_alhuda.config import CHANNELS, SAMPLE_WIDTH_BYTES
+
+    session = ServerSession()
+    session.recording = True
+    bytes_per_frame = CHANNELS * SAMPLE_WIDTH_BYTES
+    # 3 full frames + 1 trailing byte
+    pcm = b"\x00" * (bytes_per_frame * 3 + 1)
+    await feed_remote_audio(session, pcm)
+    assert session.total_samples_written == 3
+    async with session.lock:
+        assert len(session.pcm_buffer) == bytes_per_frame * 3
+
+
+@pytest.mark.asyncio
+async def test_feed_remote_audio_rejects_sub_frame():
+    """Payload smaller than one frame is dropped entirely."""
+    from rtt_alhuda.audio_capture import feed_remote_audio
+    from rtt_alhuda.config import CHANNELS, SAMPLE_WIDTH_BYTES
+
+    session = ServerSession()
+    session.recording = True
+    pcm = b"\x00"  # less than one frame
+    await feed_remote_audio(session, pcm)
+    assert session.total_samples_written == 0
 
 
 @pytest.mark.asyncio

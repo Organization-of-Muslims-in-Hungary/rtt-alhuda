@@ -57,7 +57,7 @@ async def test_feed_remote_audio_buffer_overflow():
 
     async with session.lock:
         max_bytes = max_samples * bytes_per_frame
-        assert len(session.pcm_buffer) <= max_bytes + len(pcm)
+        assert len(session.pcm_buffer) <= max_bytes
 
 
 @pytest.mark.asyncio
