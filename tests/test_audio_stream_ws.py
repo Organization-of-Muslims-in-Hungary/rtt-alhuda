@@ -1,9 +1,12 @@
 """Tests for WebSocket audio streaming over binary frames."""
 
+from __future__ import annotations
+
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
+from starlette.websockets import WebSocketState
 
 from rtt_alhuda.audio_stream_ws import (
     mic_original_fanout_loop,
@@ -33,7 +36,10 @@ def _make_session(
 
 def _mock_ws(*, closed: bool = False) -> AsyncMock:
     ws = AsyncMock()
-    ws.closed = closed
+    ws.client_state = WebSocketState.DISCONNECTED if closed else WebSocketState.CONNECTED
+    ws.application_state = (
+        WebSocketState.DISCONNECTED if closed else WebSocketState.CONNECTED
+    )
     return ws
 
 
@@ -127,8 +133,7 @@ async def test_tts_sender_skips_when_no_subscribers():
 
 @pytest.mark.asyncio
 async def test_tts_fanout_sends_prefixed_mp3_to_satellite():
-    sat = AsyncMock()
-    sat.closed = False
+    sat = _mock_ws()
     session = ServerSession()
     session.recording = True
     q = asyncio.Queue()
@@ -150,8 +155,7 @@ async def test_tts_fanout_sends_prefixed_mp3_to_satellite():
 
 @pytest.mark.asyncio
 async def test_mic_original_fanout_sends_prefixed_pcm_to_satellite():
-    sat = AsyncMock()
-    sat.closed = False
+    sat = _mock_ws()
     session = ServerSession()
     session.recording = True
     q = asyncio.Queue()

@@ -417,7 +417,7 @@ async def process_audio_loop(session: ServerSession, http: ClientSession) -> Non
                     )
                     chunk_ok = True
                     break
-                except (asyncio.TimeoutError, ClientError) as exc:
+                except (asyncio.TimeoutError, ClientError):
                     if attempt < OPENROUTER_RETRY_COUNT:
                         await send_log(
                             session,

@@ -1,8 +1,11 @@
 """WebSocket binary-frame senders for mic PCM and TTS audio streams."""
 
+from __future__ import annotations
+
 import asyncio
 
 from rtt_alhuda.models import ServerSession
+from rtt_alhuda.web_protocol import is_ws_closed
 
 MIC_PREFIX = b"\x01"
 TTS_PREFIX = b"\x02"
@@ -25,7 +28,7 @@ async def mic_ws_sender(session: ServerSession) -> None:
             frame = MIC_PREFIX + pcm
             stale: list = []
             for ws in list(session.mic_subscribers):
-                if ws.closed:
+                if is_ws_closed(ws):
                     stale.append(ws)
                     continue
                 try:
@@ -39,7 +42,7 @@ async def mic_ws_sender(session: ServerSession) -> None:
 
 
 async def mic_original_fanout_loop(session: ServerSession) -> None:
-    """Fan-out live mic PCM (0x01) to /stream/tts/ar satellite sockets."""
+    """Fan-out live mic PCM (0x01) to /{org}/stream/tts/ar satellite sockets."""
 
     queue = session.original_pcm_queue
     if queue is None:
@@ -51,7 +54,9 @@ async def mic_original_fanout_loop(session: ServerSession) -> None:
             except asyncio.TimeoutError:
                 continue
             async with session.lock:
-                targets = [w for w in session.original_audio_satellites if not w.closed]
+                targets = [
+                    w for w in session.original_audio_satellites if not is_ws_closed(w)
+                ]
             for sat_ws in targets:
                 try:
                     await sat_ws.send_bytes(MIC_PREFIX + pcm)
@@ -81,7 +86,7 @@ async def tts_ws_sender(session: ServerSession) -> None:
             frame = TTS_PREFIX + audio
             stale: list = []
             for ws in list(session.tts_subscribers):
-                if ws.closed:
+                if is_ws_closed(ws):
                     stale.append(ws)
                     continue
                 try:
@@ -109,7 +114,9 @@ async def tts_fanout_loop(session: ServerSession, lang: str) -> None:
                 continue
             async with session.lock:
                 targets = [
-                    w for w in session.tts_satellites.get(lang, ()) if not w.closed
+                    w
+                    for w in session.tts_satellites.get(lang, ())
+                    if not is_ws_closed(w)
                 ]
             for sat_ws in targets:
                 try:

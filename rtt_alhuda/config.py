@@ -36,7 +36,27 @@ OPENROUTER_TTS_VOICE_EN = os.getenv("OPENROUTER_TTS_VOICE_EN", "alloy")
 OPENROUTER_TTS_VOICE_HU = os.getenv("OPENROUTER_TTS_VOICE_HU", "alloy")
 OPENROUTER_TTS_RESPONSE_FORMAT = os.getenv("OPENROUTER_TTS_RESPONSE_FORMAT", "mp3")
 
-# Operator authentication (control page / admin APIs).
+# ── Database ─────────────────────────────────────────────────────────────────
+# SQLite by default; set DATABASE_URL=postgresql+asyncpg://... to switch.
+DEFAULT_SQLITE_PATH = REPO_ROOT / "alhuda.db"
+
+
+def database_url() -> str:
+    """Return the SQLAlchemy async database URL."""
+    url = os.getenv("DATABASE_URL")
+    if url:
+        return url
+    db_path = os.getenv("KHUTBA_DB_PATH", str(DEFAULT_SQLITE_PATH))
+    return f"sqlite+aiosqlite:///{db_path}"
+
+
+# ── Multi-tenancy ────────────────────────────────────────────────────────────
+DEFAULT_ORG_SLUG = os.getenv("KHUTBA_DEFAULT_ORG_SLUG", "default")
+
+# Self-registration is disabled for now (kept as a stub for future payment/invite flow).
+REGISTRATION_ENABLED = False
+
+# ── Operator authentication (control page / admin APIs) ─────────────────────
 JWT_COOKIE_NAME = "khutba_token"
 JWT_EXPIRY_SECONDS = 7 * 24 * 3600
 MIN_PASSWORD_LENGTH = 8

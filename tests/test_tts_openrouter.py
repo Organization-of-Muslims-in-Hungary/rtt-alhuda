@@ -1,6 +1,5 @@
 """Tests for OpenRouter TTS client."""
 
-import os
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

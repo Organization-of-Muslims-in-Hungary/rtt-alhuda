@@ -11,7 +11,7 @@ from rtt_alhuda.config import (
     SAMPLE_WIDTH_BYTES,
 )
 from rtt_alhuda.models import ServerSession
-from rtt_alhuda.web_protocol import send_log
+from rtt_alhuda.web_protocol import is_ws_closed, send_log
 
 
 async def feed_remote_audio(session: ServerSession, pcm_bytes: bytes) -> None:
@@ -151,11 +151,11 @@ async def stop_recording(session: ServerSession) -> None:
     async with session.lock:
         for _lang, socks in list(session.tts_satellites.items()):
             for sat_ws in list(socks):
-                if not sat_ws.closed:
+                if not is_ws_closed(sat_ws):
                     await sat_ws.close(code=1001)
             socks.clear()
         for sat_ws in list(session.original_audio_satellites):
-            if not sat_ws.closed:
+            if not is_ws_closed(sat_ws):
                 await sat_ws.close(code=1001)
         session.original_audio_satellites.clear()
 

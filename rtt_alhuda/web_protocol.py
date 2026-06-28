@@ -1,9 +1,23 @@
 """Outbound messages broadcast to all connected debug WebSocket clients."""
 
+from __future__ import annotations
+
 import json
 from typing import Optional
 
+from fastapi import WebSocket
+from starlette.websockets import WebSocketState
+
 from rtt_alhuda.models import ServerSession
+from rtt_alhuda.sse_channel import SseChannel
+
+
+def is_ws_closed(ws: WebSocket) -> bool:
+    """True if the Starlette/FastAPI WebSocket is no longer connected."""
+    return (
+        ws.client_state == WebSocketState.DISCONNECTED
+        or ws.application_state == WebSocketState.DISCONNECTED
+    )
 
 
 async def _broadcast(session: ServerSession, data: str) -> None:
@@ -11,13 +25,13 @@ async def _broadcast(session: ServerSession, data: str) -> None:
 
     Silently removes clients whose connections have broken.
     """
-    stale: list = []
+    stale: list[WebSocket] = []
     for ws in list(session.debug_ws_clients):
-        if ws.closed:
+        if is_ws_closed(ws):
             stale.append(ws)
             continue
         try:
-            await ws.send_str(data)
+            await ws.send_text(data)
         except (ConnectionResetError, ConnectionError, RuntimeError, OSError):
             stale.append(ws)
     for ws in stale:
@@ -56,7 +70,7 @@ async def send_sse_control(
     """Send a named ``event: control`` SSE message.
 
     If *target_client_id* is given, sends only to that client's SSE connection.
-    Otherwise broadcasts to all /stream/text clients (legacy behaviour).
+    Otherwise broadcasts to all text-stream clients.
     """
 
     payload = {"action": action, **fields}
@@ -65,28 +79,28 @@ async def send_sse_control(
     if target_client_id:
         sse_set = session.client_sse_map.get(target_client_id)
         if sse_set:
-            stale: list = []
-            for sse_resp in list(sse_set):
+            stale: list[SseChannel] = []
+            for channel in list(sse_set):
                 try:
-                    await sse_resp.write(sse_msg)
+                    await channel.write(sse_msg)
                 except Exception:
-                    stale.append(sse_resp)
-            for resp in stale:
-                sse_set.discard(resp)
-                session.text_sse_clients.discard(resp)
+                    stale.append(channel)
+            for channel in stale:
+                sse_set.discard(channel)
+                session.text_sse_clients.discard(channel)
             if not sse_set:
                 del session.client_sse_map[target_client_id]
         return
 
-    stale_resp: list = []
-    for sse_resp in list(session.text_sse_clients):
+    stale_resp: list[SseChannel] = []
+    for channel in list(session.text_sse_clients):
         try:
-            await sse_resp.write(sse_msg)
+            await channel.write(sse_msg)
         except Exception:
-            stale_resp.append(sse_resp)
-    for resp in stale_resp:
-        session.text_sse_clients.discard(resp)
+            stale_resp.append(channel)
+    for channel in stale_resp:
+        session.text_sse_clients.discard(channel)
         for cid, s in list(session.client_sse_map.items()):
-            s.discard(resp)
+            s.discard(channel)
             if not s:
                 del session.client_sse_map[cid]
