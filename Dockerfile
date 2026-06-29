@@ -28,9 +28,12 @@ COPY rtt_alhuda/ ./rtt_alhuda/
 COPY asound.conf /etc/asound.conf
 COPY docker-entrypoint.sh /app/docker-entrypoint.sh
 
+RUN mkdir -p /data
+
 ENV RTT_ALHUDA_LISTEN_HOST=0.0.0.0
 ENV RTT_ALHUDA_LISTEN_PORT=3000
 ENV PYTHONUNBUFFERED=1
+ENV KHUTBA_DB_PATH=/data/alhuda.db
 
 EXPOSE 3000
 
