@@ -16,23 +16,8 @@ from rtt_alhuda.security import (
     hash_password,
     public_user,
     validate_password,
-    validate_username,
     verify_password,
 )
-
-
-class TestValidateUsername:
-    def test_valid_minimum_length(self) -> None:
-        assert validate_username("abc") is None
-
-    def test_valid_maximum_length(self) -> None:
-        assert validate_username("a" * 32) is None
-
-    def test_too_short_returns_error(self) -> None:
-        assert validate_username("ab") is not None
-
-    def test_special_chars_returns_error(self) -> None:
-        assert validate_username("user@domain") is not None
 
 
 class TestValidatePassword:
@@ -63,7 +48,7 @@ class TestCreateAndDecodeAccessToken:
         return {
             "id": "user-id-123",
             "org_id": "org-id-456",
-            "username": "testop",
+            "email": "testop@example.com",
             "role": "operator",
         }
 
@@ -80,7 +65,7 @@ class TestCreateAndDecodeAccessToken:
         payload = {
             "sub": "user-id",
             "org_id": "org-id",
-            "username": "u",
+            "email": "u@example.com",
             "role": "operator",
             "iat": now - 10000,
             "exp": now - 1,
@@ -98,7 +83,6 @@ class TestPublicUser:
             id="abc-123",
             org_id="org-1",
             email="op@example.com",
-            username="operator",
             role=SimpleNamespace(value="operator"),
             status=SimpleNamespace(value="active"),
             created_at=datetime.now(timezone.utc),
@@ -114,6 +98,5 @@ class TestPublicUser:
         assert result["id"] == "abc-123"
         assert result["org_id"] == "org-1"
         assert result["email"] == "op@example.com"
-        assert result["username"] == "operator"
         assert result["role"] == "operator"
         assert result["status"] == "active"

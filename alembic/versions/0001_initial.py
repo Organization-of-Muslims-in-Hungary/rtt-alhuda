@@ -24,7 +24,6 @@ def upgrade() -> None:
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("name", sa.String(length=120), nullable=False),
         sa.Column("slug", sa.String(length=80), nullable=False, unique=True),
-        sa.Column("timezone", sa.String(length=40), nullable=False, server_default="UTC"),
         sa.Column("settings", sa.JSON(), nullable=False, server_default="{}"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     )
@@ -34,8 +33,7 @@ def upgrade() -> None:
         "users",
         sa.Column("id", sa.Uuid(), primary_key=True),
         sa.Column("org_id", sa.Uuid(), sa.ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False),
-        sa.Column("email", sa.String(length=255), nullable=False),
-        sa.Column("username", sa.String(length=32), nullable=False),
+        sa.Column("email", sa.String(length=255), nullable=False, unique=True),
         sa.Column("password_hash", sa.Text(), nullable=False),
         sa.Column(
             "role",
@@ -51,10 +49,9 @@ def upgrade() -> None:
         ),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("approved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.UniqueConstraint("org_id", "username", name="uq_users_org_username"),
-        sa.UniqueConstraint("org_id", "email", name="uq_users_org_email"),
     )
     op.create_index("ix_users_org_id", "users", ["org_id"])
+    op.create_index("ix_users_email", "users", ["email"], unique=True)
 
     op.create_table(
         "devices",

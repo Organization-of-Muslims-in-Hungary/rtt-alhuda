@@ -61,24 +61,24 @@ JWT_COOKIE_NAME = "khutba_token"
 JWT_EXPIRY_SECONDS = 7 * 24 * 3600
 MIN_PASSWORD_LENGTH = 8
 JWT_SECRET: str | None = None
-DEFAULT_ADMIN_USERNAME: str | None = None
+DEFAULT_ADMIN_EMAIL: str | None = None
 DEFAULT_ADMIN_PASSWORD: str | None = None
 JWT_COOKIE_SECURE = os.getenv("KHUTBA_COOKIE_SECURE", "").lower() in ("1", "true", "yes")
 
 
 def validate_auth_config() -> None:
     """Load required auth settings from the environment or fail closed."""
-    global JWT_SECRET, DEFAULT_ADMIN_USERNAME, DEFAULT_ADMIN_PASSWORD
+    global JWT_SECRET, DEFAULT_ADMIN_EMAIL, DEFAULT_ADMIN_PASSWORD
 
     JWT_SECRET = os.getenv("KHUTBA_JWT_SECRET")
-    DEFAULT_ADMIN_USERNAME = os.getenv("KHUTBA_ADMIN_USERNAME")
+    DEFAULT_ADMIN_EMAIL = os.getenv("KHUTBA_ADMIN_EMAIL")
     DEFAULT_ADMIN_PASSWORD = os.getenv("KHUTBA_ADMIN_PASSWORD")
 
     missing = [
         name
         for name, value in (
             ("KHUTBA_JWT_SECRET", JWT_SECRET),
-            ("KHUTBA_ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME),
+            ("KHUTBA_ADMIN_EMAIL", DEFAULT_ADMIN_EMAIL),
             ("KHUTBA_ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD),
         )
         if not value

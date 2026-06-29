@@ -23,15 +23,6 @@ from rtt_alhuda.security import (
 router = APIRouter()
 
 
-async def _resolve_org(db: AsyncSession, org_slug: str | None) -> Organization:
-    slug = org_slug or config.DEFAULT_ORG_SLUG
-    result = await db.execute(select(Organization).where(Organization.slug == slug))
-    org = result.scalar_one_or_none()
-    if org is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "organization not found")
-    return org
-
-
 @router.post("/api/auth/register")
 async def register(body: RegisterRequest) -> JSONResponse:
     """Self-registration is disabled for now (kept for future payment/invite flow)."""
@@ -50,12 +41,8 @@ async def register(body: RegisterRequest) -> JSONResponse:
 @router.post("/api/auth/login")
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> JSONResponse:
     """Authenticate and return a JWT + session cookie."""
-    org = await _resolve_org(db, body.org_slug)
     result = await db.execute(
-        select(User).where(
-            User.org_id == org.id,
-            func.lower(User.username) == body.username.strip().lower(),
-        )
+        select(User).where(func.lower(User.email) == body.email.strip().lower())
     )
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
@@ -75,18 +62,22 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)) -> JSONR
             content={"ok": False, "reason": "suspended"},
         )
 
+    result = await db.execute(select(Organization).where(Organization.id == user.org_id))
+    org = result.scalar_one_or_none()
+    org_slug = org.slug if org else config.DEFAULT_ORG_SLUG
+
     token = create_access_token(
         {
             "id": user.id,
             "org_id": user.org_id,
-            "username": user.username,
+            "email": user.email,
             "role": user.role,
         }
     )
     user_public = public_user(user)
-    user_public["org_slug"] = org.slug
+    user_public["org_slug"] = org_slug
     response = JSONResponse(
-        content={"ok": True, "token": token, "user": user_public, "org_slug": org.slug}
+        content={"ok": True, "token": token, "user": user_public, "org_slug": org_slug}
     )
     set_auth_cookie(response, token)
     return response

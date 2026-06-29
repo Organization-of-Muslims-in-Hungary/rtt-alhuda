@@ -15,7 +15,7 @@ def _isolate_env(monkeypatch, tmp_path):
     """Isolate the database and required auth env vars per test."""
     monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path}/test.db")
     monkeypatch.setenv("KHUTBA_JWT_SECRET", "test-jwt-secret-min-32-characters-long")
-    monkeypatch.setenv("KHUTBA_ADMIN_USERNAME", "admin")
+    monkeypatch.setenv("KHUTBA_ADMIN_EMAIL", "admin@example.com")
     monkeypatch.setenv("KHUTBA_ADMIN_PASSWORD", "changeme123")
     monkeypatch.setenv("KHUTBA_DEFAULT_ORG_SLUG", "default")
 

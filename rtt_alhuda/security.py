@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from typing import Any, Optional
 
@@ -18,14 +17,6 @@ from rtt_alhuda.config import (
 )
 
 JWT_ALGORITHM = "HS256"
-_USERNAME_RE = re.compile(r"^[a-zA-Z0-9_]{3,32}$")
-
-
-def validate_username(username: str) -> Optional[str]:
-    """Return an error message if username is invalid, else None."""
-    if not _USERNAME_RE.match(username or ""):
-        return "username must be 3-32 characters (letters, numbers, underscore)"
-    return None
 
 
 def validate_password(password: str) -> Optional[str]:
@@ -54,7 +45,7 @@ def create_access_token(user: dict[str, Any]) -> str:
     payload = {
         "sub": str(user["id"]),
         "org_id": str(user["org_id"]),
-        "username": user["username"],
+        "email": user["email"],
         "role": str(user["role"]),
         "iat": now,
         "exp": now + JWT_EXPIRY_SECONDS,
@@ -83,7 +74,6 @@ def public_user(user: Any) -> dict[str, Any]:
         "id": str(user.id),
         "org_id": str(user.org_id),
         "email": user.email,
-        "username": user.username,
         "role": str(user.role.value if hasattr(user.role, "value") else user.role),
         "status": str(
             user.status.value if hasattr(user.status, "value") else user.status

@@ -29,7 +29,7 @@ async def create_org(
     )
     if existing.scalar_one_or_none() is not None:
         raise HTTPException(status.HTTP_409_CONFLICT, "slug_taken")
-    org = Organization(name=body.name, slug=body.slug, timezone=body.timezone)
+    org = Organization(name=body.name, slug=body.slug)
     db.add(org)
     await db.commit()
     await db.refresh(org)
@@ -47,7 +47,7 @@ async def list_orgs(
     return {
         "ok": True,
         "orgs": [
-            {"id": str(o.id), "name": o.name, "slug": o.slug, "timezone": o.timezone}
+            {"id": str(o.id), "name": o.name, "slug": o.slug}
             for o in orgs
         ],
     }
@@ -61,16 +61,12 @@ async def create_user(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Create a user inside an organization (admin/superadmin only)."""
-    # Uniqueness check within the org.
+    # Email must be globally unique.
     dup = await db.execute(
-        select(User).where(
-            User.org_id == org.id,
-            (func.lower(User.username) == body.username.lower())
-            | (func.lower(User.email) == body.email.lower()),
-        )
+        select(User).where(func.lower(User.email) == body.email.lower())
     )
     if dup.scalar_one_or_none() is not None:
-        raise HTTPException(status.HTTP_409_CONFLICT, "username_or_email_taken")
+        raise HTTPException(status.HTTP_409_CONFLICT, "email_taken")
 
     role = Role(body.role)
     if role not in (Role.admin, Role.operator):
@@ -79,7 +75,6 @@ async def create_user(
     user = User(
         org_id=org.id,
         email=body.email,
-        username=body.username,
         password_hash=hash_password(body.password),
         role=role,
         status=UserStatus.active,

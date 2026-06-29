@@ -30,7 +30,7 @@ async def _superadmin_token(client: AsyncClient) -> str:
     resp = await client.post(
         "/api/auth/login",
         json={
-            "username": config.DEFAULT_ADMIN_USERNAME,
+            "email": config.DEFAULT_ADMIN_EMAIL,
             "password": config.DEFAULT_ADMIN_PASSWORD,
         },
     )
@@ -53,7 +53,7 @@ async def test_health(client: AsyncClient):
 async def test_register_disabled(client: AsyncClient):
     resp = await client.post(
         "/api/auth/register",
-        json={"username": "someone", "password": "secret123"},
+        json={"email": "someone@example.com", "password": "secret123"},
     )
     assert resp.status_code == 403
     assert resp.json()["reason"] == "registration_disabled"
@@ -64,7 +64,7 @@ async def test_login_superadmin(client: AsyncClient):
     resp = await client.post(
         "/api/auth/login",
         json={
-            "username": config.DEFAULT_ADMIN_USERNAME,
+            "email": config.DEFAULT_ADMIN_EMAIL,
             "password": config.DEFAULT_ADMIN_PASSWORD,
         },
     )
@@ -80,7 +80,7 @@ async def test_auth_me(client: AsyncClient):
     token = await _superadmin_token(client)
     resp = await client.get("/api/auth/me", headers=_auth_headers(token))
     assert resp.status_code == 200
-    assert resp.json()["user"]["username"] == config.DEFAULT_ADMIN_USERNAME
+    assert resp.json()["user"]["email"] == config.DEFAULT_ADMIN_EMAIL
 
 
 @pytest.mark.asyncio
@@ -184,7 +184,6 @@ async def test_admin_create_user(client: AsyncClient):
     resp = await client.post(
         "/api/admin/orgs/default/users",
         json={
-            "username": "operator1",
             "email": "op@example.com",
             "password": "secret123",
             "role": "operator",
@@ -192,7 +191,7 @@ async def test_admin_create_user(client: AsyncClient):
         headers=_auth_headers(token),
     )
     assert resp.status_code == 200
-    assert resp.json()["user"]["username"] == "operator1"
+    assert resp.json()["user"]["email"] == "op@example.com"
     assert resp.json()["user"]["status"] == "active"
 
 
@@ -203,8 +202,8 @@ async def test_admin_list_users(client: AsyncClient):
         "/api/admin/orgs/default/users", headers=_auth_headers(token)
     )
     assert resp.status_code == 200
-    usernames = {u["username"] for u in resp.json()["users"]}
-    assert config.DEFAULT_ADMIN_USERNAME in usernames
+    emails = {u["email"] for u in resp.json()["users"]}
+    assert config.DEFAULT_ADMIN_EMAIL in emails
 
 
 @pytest.mark.asyncio

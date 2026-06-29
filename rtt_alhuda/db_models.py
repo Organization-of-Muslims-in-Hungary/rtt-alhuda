@@ -89,7 +89,6 @@ class Organization(Base):
     )
     name: Mapped[str] = mapped_column(String(120))
     slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
-    timezone: Mapped[str] = mapped_column(String(40), default="UTC")
     settings: Mapped[dict] = mapped_column(_json_type(), default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -121,8 +120,7 @@ class User(Base):
         ForeignKey("organizations.id", ondelete="CASCADE"),
         index=True,
     )
-    email: Mapped[str] = mapped_column(String(255))
-    username: Mapped[str] = mapped_column(String(32))
+    email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(Text)
     role: Mapped[Role] = mapped_column(_enum(Role), default=Role.operator)
     status: Mapped[UserStatus] = mapped_column(
@@ -134,11 +132,6 @@ class User(Base):
         default=_utcnow,
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    __table_args__ = (
-        UniqueConstraint("org_id", "username"),
-        UniqueConstraint("org_id", "email"),
-    )
 
     org: Mapped["Organization"] = relationship(back_populates="users")
 

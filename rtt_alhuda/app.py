@@ -60,8 +60,7 @@ async def _seed_defaults() -> None:
         if user_count == 0:
             user = User(
                 org_id=org.id,
-                email=f"{config.DEFAULT_ADMIN_USERNAME}@{config.DEFAULT_ORG_SLUG}.local",
-                username=config.DEFAULT_ADMIN_USERNAME or "admin",
+                email=config.DEFAULT_ADMIN_EMAIL,
                 password_hash=hash_password(config.DEFAULT_ADMIN_PASSWORD or "changeme"),
                 role=Role.superadmin,
                 status=UserStatus.active,
@@ -69,7 +68,7 @@ async def _seed_defaults() -> None:
             )
             db.add(user)
             await db.commit()
-            log(f"Seeded superadmin user '{config.DEFAULT_ADMIN_USERNAME}'")
+            log(f"Seeded superadmin user '{config.DEFAULT_ADMIN_EMAIL}'")
             log(f"Default organization slug: '{config.DEFAULT_ORG_SLUG}'")
 
 
