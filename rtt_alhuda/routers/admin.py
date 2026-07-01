@@ -9,12 +9,21 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rtt_alhuda.database import get_db
-from rtt_alhuda.db_models import Organization, Role, User, UserStatus
+from rtt_alhuda.db_models import Device, Organization, Role, SessionRecord, User, UserStatus
 from rtt_alhuda.dependencies import get_org_by_slug, require_org_admin, require_superadmin
 from rtt_alhuda.schemas import OrgCreate, UserCreate, UserStatusUpdate
 from rtt_alhuda.security import hash_password, public_user
 
 router = APIRouter(prefix="/api/admin")
+
+
+def _count(model: type):
+    """Subquery counting rows of ``model`` for the current organization."""
+    return (
+        select(func.count(model.id))
+        .where(model.org_id == Organization.id)
+        .scalar_subquery()
+    )
 
 
 @router.post("/orgs", response_model=None)
@@ -41,16 +50,31 @@ async def list_orgs(
     db: AsyncSession = Depends(get_db),
     _user: User = Depends(require_superadmin),
 ) -> dict:
-    """List all organizations (superadmin only)."""
-    result = await db.execute(select(Organization).order_by(Organization.created_at))
-    orgs = result.scalars().all()
-    return {
-        "ok": True,
-        "orgs": [
-            {"id": str(o.id), "name": o.name, "slug": o.slug}
-            for o in orgs
-        ],
-    }
+    """List all organizations with per-org counts (superadmin only)."""
+    stmt = (
+        select(
+            Organization,
+            _count(User).label("user_count"),
+            _count(Device).label("device_count"),
+            _count(SessionRecord).label("session_count"),
+        )
+        .order_by(Organization.created_at)
+    )
+    rows = await db.execute(stmt)
+    orgs = []
+    for org, user_count, device_count, session_count in rows.all():
+        orgs.append(
+            {
+                "id": str(org.id),
+                "name": org.name,
+                "slug": org.slug,
+                "created_at": org.created_at.isoformat() if org.created_at else None,
+                "user_count": int(user_count or 0),
+                "device_count": int(device_count or 0),
+                "session_count": int(session_count or 0),
+            }
+        )
+    return {"ok": True, "orgs": orgs}
 
 
 @router.post("/orgs/{org_slug}/users")
